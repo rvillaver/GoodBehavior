@@ -7,6 +7,9 @@ with a hook that pushes back on self-declared "done."
 It's not project knowledge. It's a *way of working*, distilled from a real build where the recurring failure was
 **false claims and lazy output** — passing a test or showing a screenshot and calling a half-built feature "done."
 
+> **New here? Read the [TUTORIAL](TUTORIAL.md)** — install into a project (new or existing), turn intent into a plan +
+> checklists, then build it down under the gated loop. It also shows exactly what does (and doesn't) land in your project.
+
 ## What's in it
 
 | Piece | What it does | Type |
