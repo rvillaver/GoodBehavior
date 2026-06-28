@@ -68,3 +68,7 @@ as the done-gate. (Requires the source to be a committed git repo so the merge b
 A persona + skills can encode the rules, but the engine that made this work was a human catching slips and a habit of
 writing down every lesson. The hook adds teeth, but it's a heuristic nudge, not a lie detector. Keep
 **user-confirmation as the done-gate** — the method is human-in-the-loop by design, not an autopilot for honesty.
+
+## License
+
+[MIT](LICENSE) © 2026 Ronald Villaver.
