@@ -1,0 +1,11 @@
+# GoodBehavior's own self-development scratch — audits/roadmaps of the bundle
+# working on itself. This is the one place real adopter projects get named
+# (eating your own dogfood means referencing real events), so it is kept OUT of
+# git by design: a project name in a self-dev roadmap can't leak into history.
+#
+# Durable lessons reach the distributed bundle through TODO.md / CLAUDE.md /
+# skills instead, where they're genericized by rule. See the three-tier model:
+#   - distributed (skills/hook/templates/CLAUDE.md) — pure generic method
+#   - tracked source-only (README, TODO.md)         — generic by rule
+#   - self-dev scratch (docs/)                       — local only, may name projects
+docs/

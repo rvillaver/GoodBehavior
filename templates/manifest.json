@@ -1,0 +1,18 @@
+{
+  "_comment": "Written by /adopt-goodbehavior into <project>/.claude/goodbehavior/manifest.json. Read by /update-goodbehavior to 3-way-merge upstream changes. 'source' is the GoodBehavior repo this copy came from; 'sourceCommit' is the merge base (HEAD at adopt time, or null if the source had no commits yet); each 'files' entry maps a target path to its source path and the sha256 of the file AS INSTALLED (so update can tell untouched from locally-adapted).",
+  "source": "/abs/path/to/GoodBehavior",
+  "sourceCommit": "0000000000000000000000000000000000000000",
+  "installedAt": "2026-01-01T00:00:00Z",
+  "updatedAt": null,
+  "files": {
+    ".claude/skills/adopt-goodbehavior/SKILL.md":      { "from": ".claude/skills/adopt-goodbehavior/SKILL.md",      "sha256": "" },
+    ".claude/skills/audit-goodbehavior/SKILL.md":      { "from": ".claude/skills/audit-goodbehavior/SKILL.md",      "sha256": "" },
+    ".claude/skills/roadmap-goodbehavior/SKILL.md":    { "from": ".claude/skills/roadmap-goodbehavior/SKILL.md",    "sha256": "" },
+    ".claude/skills/gate-build-goodbehavior/SKILL.md": { "from": ".claude/skills/gate-build-goodbehavior/SKILL.md", "sha256": "" },
+    ".claude/skills/verify-goodbehavior/SKILL.md":     { "from": ".claude/skills/verify-goodbehavior/SKILL.md",     "sha256": "" },
+    ".claude/skills/uatplan-goodbehavior/SKILL.md":    { "from": ".claude/skills/uatplan-goodbehavior/SKILL.md",    "sha256": "" },
+    ".claude/skills/learn-goodbehavior/SKILL.md":      { "from": ".claude/skills/learn-goodbehavior/SKILL.md",      "sha256": "" },
+    ".claude/skills/update-goodbehavior/SKILL.md":     { "from": ".claude/skills/update-goodbehavior/SKILL.md",     "sha256": "" },
+    ".claude/hooks/done-gate.py":                      { "from": ".claude/hooks/done-gate.py",                      "sha256": "" }
+  }
+}
