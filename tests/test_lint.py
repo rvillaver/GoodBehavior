@@ -9,8 +9,10 @@ Dev phrasing is allowed only where the development instantiation legitimately li
 import json, os, py_compile, re, sys, tempfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-PROFILES = ("development", "analysis", "research", "creative")
+PROFILES = ("development", "analysis", "research", "creative", "devops")
 SLOTS = ("**the-real-thing:**", "**verify:**", "**evidence:**")
+# devops guides (templates/profiles/devops/<name>.md): every practice is a `**rule:**` paired with a `**probe:**`
+DEVOPS_GUIDES = ("baseline", "terraform", "shell", "aws", "azure", "gcp", "digitalocean", "onprem", "kubernetes", "helm")
 
 # files that must stay artifact-agnostic (the invariant layer)
 INVARIANT_FILES = [
@@ -28,6 +30,21 @@ INVARIANT_FILES = [
 # profile ("per the profile", "for software", "development") are instantiations, not regressions.
 DEV_CODED = re.compile(r"(UI \+ backend|the real UI|UI \*and\* (the real )?backend|run the app\b)", re.I)
 PROFILE_SCOPED = re.compile(r"(profile|for software|development|dev app|dev project)", re.I)
+# provider names belong in the devops guides, never in the invariant layer
+PROVIDER_CODED = re.compile(r"\b(AWS|Amazon|Azure|GCP|Google Cloud|DigitalOcean|gcloud|doctl)\b")
+
+
+def unpaired_rules(body):
+    """Return rules (first 60 chars) with no `**probe:**` before the next rule or heading."""
+    bad, rule = [], None
+    for ln in body.splitlines():
+        if "**rule:**" in ln or ln.startswith("#"):
+            if rule:
+                bad.append(rule)
+            rule = ln.strip()[:60] if "**rule:**" in ln else None
+        elif "**probe:**" in ln:
+            rule = None
+    return bad + ([rule] if rule else [])
 
 
 def read(rel):
@@ -52,6 +69,17 @@ def main():
     for p in PROFILES:
         check(f"INDEX links {p}.md", f"({p}.md)" in index)
 
+    # devops guides: present, and every rule carries its live probe
+    for g in DEVOPS_GUIDES:
+        rel = f"templates/profiles/devops/{g}.md"
+        if not os.path.isfile(os.path.join(ROOT, rel)):
+            check(f"devops guide {g}: exists", False, rel)
+            continue
+        body = read(rel)
+        bad = unpaired_rules(body)
+        check(f"devops guide {g}: every rule has a probe", "**rule:**" in body and not bad,
+              f"e.g. {bad[0]!r}" if bad else "no rules found")
+
     # skill frontmatter name == dir name
     skills_dir = os.path.join(ROOT, ".claude", "skills")
     for d in sorted(os.listdir(skills_dir)):
@@ -71,7 +99,8 @@ def main():
 
     # python artifacts compile
     with tempfile.TemporaryDirectory() as td:
-        for rel in (".claude/hooks/done-gate.py", "scripts/install.py", "scripts/update.py"):
+        for rel in (".claude/hooks/done-gate.py", "scripts/install.py", "scripts/update.py",
+                    "templates/profiles/devops/guard.py"):
             try:
                 py_compile.compile(os.path.join(ROOT, rel), doraise=True,
                                    cfile=os.path.join(td, os.path.basename(rel) + "c"))
@@ -85,6 +114,8 @@ def main():
                      if DEV_CODED.search(ln) and not PROFILE_SCOPED.search(ln)]
         check(f"{rel}: no unscoped dev-coded phrasing", not offenders,
               f"e.g. {offenders[0][:90]!r}" if offenders else "")
+        named = [ln.strip() for ln in read(rel).splitlines() if PROVIDER_CODED.search(ln)]
+        check(f"{rel}: provider-neutral", not named, f"e.g. {named[0][:90]!r}" if named else "")
 
     # upward-infection guard: nothing machine-local may flow into the bundle. Promotions must be
     # identity-stripped, generic form (TODO.md's standing rule) — a /Users/... path is the most

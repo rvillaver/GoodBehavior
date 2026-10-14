@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """install.py round-trip test — installs the REAL bundle into a temp target and checks the guarantees:
-only the planned profiles land (never all four), the manifest records true sha256s, settings.json merges
+only the planned profiles land (never all five), the manifest records true sha256s, settings.json merges
 without duplication, existing files are never clobbered, and a re-run is a clean no-op."""
 import hashlib, json, os, subprocess, sys, tempfile
 
@@ -81,6 +81,9 @@ def main():
         stops = settings["hooks"].get("Stop", [])
         wired = sum(1 for e in stops for h in e.get("hooks", []) if "done-gate" in h.get("command", ""))
         check("Stop hook wired exactly once", wired == 1)
+        pre = settings["hooks"].get("PreToolUse", [])
+        guard = [e for e in pre for h in e.get("hooks", []) if "done-gate" in h.get("command", "")]
+        check("no PreToolUse wiring for profiles without a guard (analysis, development)", not guard)
 
         # idempotency: re-run must create nothing new and not double-wire
         report2 = run_install(plan_path)
@@ -89,6 +92,37 @@ def main():
             stops2 = json.load(f)["hooks"]["Stop"]
         wired2 = sum(1 for e in stops2 for h in e.get("hooks", []) if "done-gate" in h.get("command", ""))
         check("re-run does not double-wire the hook", wired2 == 1)
+        with open(os.path.join(target, ".claude", "settings.json")) as f:
+            pre2 = json.load(f)["hooks"].get("PreToolUse", [])
+        check("re-run adds no PreToolUse wiring", not [e for e in pre2 for h in e.get("hooks", [])
+                                                       if "done-gate" in h.get("command", "")])
+
+    # profile guides: a nested <profile>/<guide> entry lands under profiles/, tracked with its source path
+    with tempfile.TemporaryDirectory() as target:
+        plan_path = os.path.join(target, "plan.json")
+        with open(plan_path, "w") as f:
+            json.dump({"source": ROOT, "target": target, "skills": [],
+                       "profiles": ["devops", "devops/baseline", "devops/guard.py"], "hook": False, "templates": {}}, f)
+        run_install(plan_path)
+        guide = os.path.join(target, ".claude/goodbehavior/profiles/devops/baseline.md")
+        check("guide copied byte-identical",
+              os.path.isfile(guide) and sha256(guide) == sha256(os.path.join(ROOT, "templates/profiles/devops/baseline.md")))
+        with open(os.path.join(target, ".claude/goodbehavior/manifest.json")) as f:
+            entry = json.load(f)["files"].get(".claude/goodbehavior/profiles/devops/baseline.md", {})
+        check("manifest tracks the guide's source path", entry.get("from") == "templates/profiles/devops/baseline.md")
+        g = os.path.join(target, ".claude/goodbehavior/profiles/devops/guard.py")
+        plan_hook = {"source": ROOT, "target": target, "skills": [], "profiles": ["devops", "devops/guard.py"],
+                     "hook": True, "templates": {}}
+        with open(plan_path, "w") as f:
+            json.dump(plan_hook, f)
+        run_install(plan_path)
+        run_install(plan_path)  # re-run must not double-wire
+        with open(os.path.join(target, ".claude", "settings.json")) as f:
+            pre = json.load(f)["hooks"].get("PreToolUse", [])
+        wired = [e for e in pre for h in e.get("hooks", []) if "done-gate" in h.get("command", "")]
+        check("devops: PreToolUse guard wired exactly once, on every tool", len(wired) == 1 and wired[0].get("matcher") == "*")
+        check("guard.py installed as-is (no .md added)",
+              os.path.isfile(g) and sha256(g) == sha256(os.path.join(ROOT, "templates/profiles/devops/guard.py")))
 
     print(f"test_install: {'FAILED: ' + '; '.join(failures) if failures else 'all passed'}")
     return 1 if failures else 0

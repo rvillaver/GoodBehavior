@@ -7,7 +7,7 @@ with a hook that pushes back on self-declared "done."
 It's not project knowledge. It's a *way of working*, distilled from a real build where the recurring failure was
 **false claims and lazy output** — passing a test or showing a screenshot and calling a half-built feature "done."
 
-**Not dev-only.** The discipline is invariant across development, analysis, research, and creative work — only what
+**Not dev-only.** The discipline is invariant across development, analysis, research, creative, and DevOps work — only what
 "the real thing / verify / evidence" mean changes, and a lightweight **profile** captures that per project (composable
 per-slot, with a custom fallback so it never declines a project). Adoption *asks what the project is* before sniffing
 its files.
@@ -20,8 +20,8 @@ its files.
 | Piece | What it does | Type |
 |---|---|---|
 | `CLAUDE.md` | The operating principles (the persona). The definition of done, the loop, no-sidetrack, honesty. | guidance |
-| `/adopt-goodbehavior` | **Entry point.** Elicits project intent, resolves a **profile** (dev/analysis/research/creative, composable), analyzes the workflow, proposes tailored amendments (CLAUDE.md + skills + hook + plan/memory) with options, asks, then applies — integrating with existing docs (e.g. HANDOFF.md), not overwriting. | skill |
-| `templates/profiles/` | The **profile** layer: what "the real thing / verify / evidence" mean per project type. Index + four core bodies, loaded on demand; only the resolved one installs into a project. | guidance |
+| `/adopt-goodbehavior` | **Entry point.** Elicits project intent, resolves a **profile** (dev/analysis/research/creative/devops, composable), analyzes the workflow, proposes tailored amendments (CLAUDE.md + skills + hook + plan/memory) with options, asks, then applies — integrating with existing docs (e.g. HANDOFF.md), not overwriting. | skill |
+| `templates/profiles/` | The **profile** layer: what "the real thing / verify / evidence" mean per project type. Index + five core bodies, loaded on demand; only the resolved one installs into a project. `devops/` adds guides: a cross-cloud baseline (every rule with its live probe), then per-platform guides. | guidance |
 | `/audit-goodbehavior` | Reference-cross-checked, grouped, gated gap register. | skill |
 | `/roadmap-goodbehavior` | Rolls gaps into a phased, gated plan + backlog. | skill |
 | `/gate-build-goodbehavior` | Executes one phase: build → verify live → record learnings → gate. | skill |
@@ -29,9 +29,9 @@ its files.
 | `/uatplan-goodbehavior` | Builds/maintains a living manual UAT plan — feature map + how to test each + pass/fail checklist. Feeds verify. | skill |
 | `/learn-goodbehavior` | Writes a durable learning to memory (so it's not relearned). | skill |
 | `/update-goodbehavior` | Pulls the latest bundle from its source repo and 3-way-merges it into the local copy, preserving project-local adaptations. | skill |
-| `.claude/hooks/done-gate.py` + `.claude/settings.json` | Stop hook: pushes back on "done" without evidence — including *behaviorally*: verification vocabulary is honored only if something was actually run/observed after the last file change that turn. | enforcement |
+| `.claude/hooks/done-gate.py` + `.claude/settings.json` | Stop hook: pushes back on "done" without evidence — including *behaviorally*: verification vocabulary is honored only if something was actually run/observed after the last file change that turn. A profile can supply its own questions (devops: change vs investigation) and its own PreToolUse guard (devops: `guard.py` — reads run, changes ask, secrets are denied, fails closed, logs every decision). | enforcement |
 | `scripts/install.py` · `scripts/update.py` | The mechanical halves of adopt/update, deterministic: copy+hash+wire+manifest, and the git 3-way merge. The skills keep the judgment; the scripts keep the consistency. | tooling |
-| `tests/run_all.py` | The bundle held to its own standard: hook behavior, install round-trip, update merge paths, structural+drift lint — one command, all green before shipping. | self-test |
+| `tests/run_all.py` | The bundle held to its own standard: hook behavior, install round-trip, update merge paths, structural+drift lint, and every cloud CLI command in the devops guides parsed offline by the real CLI (skipped where a CLI isn't installed) — one command, all green before shipping. | self-test |
 
 Guidance shapes intent; **only the hook enforces** when intent slips. That's the point — the method failed before
 precisely because nothing stopped a lazy turn.
