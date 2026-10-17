@@ -14,7 +14,7 @@ PROFILES = ("development", "analysis", "research", "creative", "devops")
 SLOTS = ("**the-real-thing:**", "**verify:**", "**evidence:**")
 # devops guides (templates/profiles/devops/<name>.md): every practice is a `**rule:**` paired with a `**probe:**`
 DEVOPS_GUIDES = ("baseline", "terraform", "shell", "aws", "azure", "gcp", "digitalocean", "onprem", "kubernetes", "helm",
-                 "docker", "ansible", "ci", "python")
+                 "docker", "ansible", "ci", "python", "observability")
 
 # files that must stay artifact-agnostic (the invariant layer)
 INVARIANT_FILES = [
@@ -88,7 +88,8 @@ def main():
     rows = subprocess.run(cmd, shell=True, cwd=ROOT, capture_output=True, text=True).stdout.splitlines()
     batched = {(r.split("|")[2].strip().rsplit("-", 1)[0], r.split("|")[3].strip()) for r in rows}
     area_only = {"Backup and DR", "Observability", "Workloads", "Releases", "Cluster and upgrades",
-                 "Namespaces and environments", "Before running a script", "Before running a playbook"}
+                 "Namespaces and environments", "Before running a script", "Before running a playbook",
+                 "Alerting", "Metrics", "Logs"}
     dropped = set()
     for g in DEVOPS_GUIDES:
         section = None

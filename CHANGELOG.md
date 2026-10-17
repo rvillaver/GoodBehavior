@@ -3,6 +3,28 @@
 Every entry here is a unit a downstream project will 3-way-merge via `/update-goodbehavior` — write entries so an
 adopter skimming before an update knows what's coming and why.
 
+## 2026-10-17 — devops guard: reading a saved plan's changed fields runs
+
+- `terraform show -json <plan> | jq …` now runs when the filter prints only addresses, actions, key names and the
+  sensitive/unknown masks. `before`/`after` may be read inside `select()` or through `keys`, `length` or `type`.
+  So "which fields change on these resources" no longer asks.
+- It now asks for filters that print values, which the old word check let through: `jq .`, a bare `jq`,
+  `.resource_changes[0]`, `.resource_changes[].change`, `to_entries`/`tostring` on a change, `.change[$var]`, and
+  `error`/`debug`/`stderr`, which print to stderr even inside `select()`.
+
+## 2026-10-17 — devops: observability guide; the guard asks before monitoring writes
+
+- New guide `devops/observability` for the monitoring stack itself: Prometheus, Alertmanager, Loki, Grafana. Rules
+  and probes for config in Git and checked in CI, alert unit and routing tests, alerts that reach a person, a
+  dead man's switch, runbooks, noisy alerts, silences, target and Prometheus health, retention, HA, logs that
+  arrive, secrets and labels in logs, Loki retention and dropped lines, who can reach the APIs, Loki tenants,
+  Grafana SSO, default password and service-account tokens, patching, query and scrape speed, scrape limits,
+  unused metrics, log volume, and rebuilding the stack from Git. Probes were run against a local stack.
+- Install it with `devops/observability` in the adopt plan when the project runs or configures its own monitoring.
+- Guard: firing a test alert, adding or expiring a silence, rule and Alertmanager syncs (`mimirtool`, `lokitool`,
+  `cortextool`), `promtool push`, `grafana-cli` admin and plugin installs and `grafanactl resources push` now ask,
+  also when run through `docker run --entrypoint`. Their reads and file checks still run.
+
 ## 2026-10-17 — devops guard: local work runs, only infrastructure asks
 
 The guard now works like a developer's machine. Before, anything it couldn't prove read-only asked, so deleting a

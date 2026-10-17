@@ -303,10 +303,49 @@ TOOL_READS = {
 }
 GOVC_READ = re.compile(r"^(about|ls|find|tree|events|.*\.(info|ls|tree|sample|list|ip|summary))$")
 
+# Monitoring CLIs: first verb -> None (every subcommand reads or checks local files) or the read-only second verbs
+# (the first verb alone reads too). Anything else asks: a test alert pages people, a silence mutes them, a rules
+# or config sync changes what alerts, a push writes metrics.
+OBS_READS = {
+    "amtool": {"check-config": None, "config": None, "cluster": None, "template": None, "alert": {"query"},
+               "silence": {"query"}},
+    "promtool": {"check": None, "test": None, "query": None, "debug": None, "tsdb": None, "promql": None},
+    "logcli": {"query": None, "instant-query": None, "labels": None, "series": None, "stats": None, "volume": None,
+               "volume_range": None, "detected-fields": None},
+    "mimirtool": {"rules": {"lint", "check", "prepare", "list", "print", "get", "diff"},
+                  "alertmanager": {"get", "verify"}, "analyze": None, "config": None, "acl": None},
+    "cortextool": {"rules": {"lint", "check", "prepare", "list", "print", "get", "diff"},
+                   "alertmanager": {"get", "verify"}, "analyse": None},
+    "lokitool": {"rules": {"lint", "check", "prepare", "list", "print", "get", "diff"}},
+    "grafana-cli": {"plugins": {"ls", "list-remote", "list-versions"}},
+    "grafanactl": {"resources": {"get", "list", "pull", "validate"}, "config": None},
+}
+OBS_VALUE_FLAGS = {"--alertmanager.url", "-o", "--output", "--config.file", "--addr", "--org-id", "--since",
+                   "--from", "--to", "--limit", "--address", "--id", "--key", "--user", "--config", "--context",
+                   "--author", "-a", "--comment", "-c", "--duration", "-d", "--annotation", "--start", "--end",
+                   "--pluginsDir", "--homepath"}
+OBS_WHY = {("amtool", "alert"): "fires an alert, which can page or notify people",
+           ("amtool", "silence"): "adds, changes or expires a silence, which mutes or unmutes alerts"}
+
 
 # Load generators: Claude never runs them, even with a yes. It hands the user the script and command instead.
 LOAD_TOOLS = {"k6", "hey", "ab", "wrk", "wrk2", "vegeta", "locust", "artillery", "jmeter", "siege", "oha",
               "bombardier", "autocannon", "gatling", "gatling.sh", "drill", "ddosify", "plow"}
+
+
+def check_obs(name, args):
+    words = positional(args, OBS_VALUE_FLAGS)
+    if name == "grafana":  # the server binary: `grafana cli ...` is grafana-cli, `grafana server` runs locally
+        if words[:1] != ["cli"]:
+            return None
+        name, words = "grafana-cli", words[1:]
+    if not words or "--help" in args or "-h" in args or words[0] in {"help", "version", "--version"}:
+        return None
+    reads = OBS_READS[name].get(words[0], False)
+    if reads is None or (reads and (len(words) == 1 or words[1] in reads)):
+        return None
+    return ask("`%s %s`" % (name, " ".join(words[:2])),
+               OBS_WHY.get((name, words[0]), "changes alerting, rules or a monitoring server"))
 
 
 def check_aws(args):
@@ -552,6 +591,114 @@ def iac_problem(workdir):
     return None
 
 
+# `terraform show -json` holds every attribute value in clear, secrets included. A jq filter runs when it can only
+# print plan metadata: addresses, actions, key names, and the sensitive/unknown masks (booleans). `before`, `after`
+# and other value trees may be read only where nothing of them is printed: inside select(), or through keys,
+# length or type. Anything the check doesn't understand counts as printing values.
+TF_JSON_CONTAINERS = {"resource_changes", "change"}
+TF_JSON_LEAVES = {"address", "module_address", "previous_address", "mode", "type", "name", "index", "provider_name",
+                  "deposed", "actions", "action_reason", "replace_paths", "importing", "format_version",
+                  "terraform_version", "applyable", "complete", "errored", "key", "value"}
+TF_JSON_MASKS = {"after_sensitive", "before_sensitive", "after_unknown", "before_unknown"}
+JQ_WORDS = {"select", "if", "then", "else", "elif", "end", "empty", "not", "and", "or", "as", "null", "true",
+            "false", "K", "M", "map", "keys", "keys_unsorted", "length", "type", "any", "all", "has", "in", "test",
+            "startswith", "endswith", "contains", "inside", "join", "ascii_downcase", "ascii_upcase", "tsv", "csv"}
+JQ_PATH = re.compile(r"(\$\w+|(?<![\w\])}?\"])\.)((?:\w+)?(?:\??(?:\.\w+|\[[^\[\]]*\]))*\??)")
+
+
+def jq_strings(f):
+    """Replace each string literal with its interpolations, `(expr), (expr)`, or with `null` when it has none."""
+    out, i = [], 0
+    while i < len(f):
+        if f[i] != '"':
+            out.append(f[i])
+            i += 1
+            continue
+        i, parts = i + 1, []
+        while i < len(f) and f[i] != '"':
+            if f[i:i + 2] == "\\(":
+                depth, j = 1, i + 2
+                while j < len(f) and depth:
+                    depth += {"(": 1, ")": -1}.get(f[j], 0)
+                    j += 1
+                parts.append("(" + jq_strings(f[i + 2:j - 1]) + ")")
+                i = j
+            else:
+                i += 2 if f[i] == "\\" else 1
+        out.append(" " + (", ".join(parts) or "null") + " ")
+        i += 1
+    return "".join(out)
+
+
+def jq_prints_values(cmd):
+    """None when the jq command after `terraform show -json` prints only plan metadata, else why it may not."""
+    try:
+        lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        toks = list(lex)
+    except ValueError:
+        return "its jq command could not be parsed"
+    safe_vars, filt, k = {"__safe"}, None, 0
+    while k < len(toks) and toks[k] not in {"|", ";", "&&", "||", ")", "&"}:
+        t = toks[k]
+        if t in {"--arg", "--argjson"} and k + 2 < len(toks):
+            safe_vars.add(toks[k + 1])
+            k += 3
+            continue
+        if t in {"-f", "--from-file", "--slurpfile", "--rawfile", "--args", "--jsonargs"} or t.startswith("-L"):
+            return "jq reads its filter or data from elsewhere"
+        if not t.startswith("-") and filt is None:
+            filt = t
+        k += 1
+    if filt is None:
+        return "jq with no filter prints everything"
+    f = re.sub(r'\[\s*"(\w+)"\s*\]|\.\s*"(\w+)"', lambda m: "." + (m.group(1) or m.group(2)), filt)
+    f = jq_strings(f)
+    if ".." in f or "|=" in f or re.search(r"@(?!tsv\b|csv\b)\w+", f):
+        return "the filter uses `..`, an update or a format that can print whole values"
+    side = re.search(r"\b(error|debug|stderr|halt_error|input_line_number)\b", f)
+    if side:  # these print to stderr even inside select()
+        return "the filter calls `%s`, which prints what it is given" % side.group(1)
+    while True:  # select() only filters, so what it reads is never printed
+        m = re.search(r"\bselect\s*\((?!S\))", f)
+        if not m:
+            break
+        depth, j = 1, m.end()
+        while j < len(f) and depth:
+            depth += {"(": 1, ")": -1}.get(f[j], 0)
+            j += 1
+        f = f[:m.start()] + "select(S)" + f[j:]
+    path = r"(?:\$\w+|\.)(?:\w+)?(?:\??(?:\.\w+|\[[^\[\]]*\]))*\??"
+    f = re.sub(r"\(?\s*(?:\$\w+)?(?:\.\w+|\[[^\[\]]*\])*\.(?:%s)\s*(?://\s*\{\s*\})?\s*\)?\s*\|\s*to_entries(?:\[\])?"
+               % "|".join(TF_JSON_MASKS), " M ", f)  # entries of a mask are key names and booleans
+    f = re.sub(r"%s\s*\|\s*(?:keys_unsorted|keys|length|type)\b(?:\[\])?" % path, " K ", f)
+    while re.search(r"\(\s*[KM]\s*\)", f):
+        f = re.sub(r"\(\s*([KM])\s*\)", r" \1 ", f)
+    f = f.replace("select(S)", " select ")
+    for m in re.finditer(r"\b([KM])\s+as\s+\$(\w+)", f):
+        safe_vars.add(m.group(2))
+    for m in JQ_PATH.finditer(f):
+        base, rest = m.group(1), m.group(2)
+        kind = "safe" if base[1:] in safe_vars else "container"
+        for field, index in re.findall(r"\.?(\w+)|\[([^\]]*)\]", rest):
+            if kind != "container":
+                break
+            if field:
+                kind = ("container" if field in TF_JSON_CONTAINERS else "safe" if field in TF_JSON_LEAVES
+                        else "mask" if field in TF_JSON_MASKS else "bad:" + field)
+            elif not re.fullmatch(r"\s*-?\d*\s*", index):
+                kind = "bad:[%s]" % index
+        if kind.startswith("bad:"):
+            return "the filter prints `%s`, which can hold values" % kind[4:]
+        after = f[m.end():].lstrip()
+        if kind == "container" and not re.match(r"\||as\s+\$\w+", after):
+                return "the filter prints `%s` whole, values included" % (base + rest)
+    for w in re.findall(r"(?<![.$\w@])([A-Za-z_]\w*)\b(?!\s*:)", f):
+        if w not in JQ_WORDS and w not in TF_JSON_LEAVES | TF_JSON_CONTAINERS | TF_JSON_MASKS:
+            return "the filter calls `%s`, which the guard can't vet" % w
+    return None
+
+
 def check_terraform(binary, args, cwd, raw):
     flags = [a for a in args if a.startswith("-")]
     words = [a for a in args if not a.startswith("-")]
@@ -571,14 +718,13 @@ def check_terraform(binary, args, cwd, raw):
         return None if words[1:2] in (["list"], ["show"]) else ask("`%s workspace`" % binary, "changes workspace")
     if sub == "output" and (any(f in {"-json", "-raw"} for f in flags) or len(words) > 1):
         return secret("`%s output %s`" % (binary, " ".join(flags)), "prints sensitive outputs in clear")
-    jq = re.search(r"\|\s*jq\b(.*)", raw or "", re.S)
-    if sub == "show" and "-json" in flags and jq and not re.search(
-            r"\b(after|before|values|prior_state|planned_values|variables|configuration|outputs)\b|\.\.|\[\]\s*$",
-            jq.group(1).split("|")[0] + jq.group(1)):
-        return None  # piped to a jq filter that picks addresses and actions, not attribute values
+    jq = re.search(r"\bshow\b[^|]*\|\s*jq\b(.*)", raw or "", re.S)
+    why = jq_prints_values(jq.group(1)) if jq else None
+    if sub == "show" and "-json" in flags and jq and not why:
+        return None  # piped to a jq filter that prints addresses, actions, key names and masks, not values
     if sub == "show" and "-json" in flags:
-        return ask("`%s show -json`" % binary, "can print sensitive values; filter it (for example with jq) to "
-                   "the fields you need")
+        return ask("`%s show -json`" % binary, "can print sensitive values: %s. Filter it with jq to addresses, "
+                   "actions and key names (`keys`, or inside `select()`)" % (why or "nothing filters it"))
     if sub == "console":
         return ask("`%s console`" % binary, "can evaluate and print sensitive values")
     if sub not in TF_READ:
@@ -1309,7 +1455,7 @@ DOCKER_RUN_VALUE_FLAGS = {"-v", "--volume", "-e", "--env", "-w", "--workdir", "-
                           "-h", "--hostname", "-l", "--label", "--restart", "--memory", "-m", "--cpus",
                           "--add-host", "--dns", "--log-driver", "--pull"}
 CLI_IMAGES = re.compile(r"(^|/)(terraform|tofu|opentofu|aws-cli|azure-cli|cloud-sdk|google-cloud-cli|doctl|kubectl|"
-                        r"helm|ansible)(:|@|$)")
+                        r"helm|ansible|logcli|mimirtool)(:|@|$)")
 
 
 def check_docker(args, cwd, depth, env_host):
@@ -1340,7 +1486,7 @@ def check_docker(args, cwd, depth, env_host):
         if h and h[2] == "deny":
             return (h[0].replace("remote", "container"), h[1], h[2])
     if sub in {"run", "create", "exec"}:
-        sargs, j, mounts, envfiles = rest[1:], 0, [], []
+        sargs, j, mounts, envfiles, entrypoint = rest[1:], 0, [], [], None
         while j < len(sargs) and sargs[j].startswith("-"):
             f = sargs[j].split("=", 1)[0]
             if f in DOCKER_RUN_VALUE_FLAGS:
@@ -1349,6 +1495,8 @@ def check_docker(args, cwd, depth, env_host):
                     mounts.append(val)
                 if f == "--env-file":
                     envfiles.append(val)
+                if f == "--entrypoint":
+                    entrypoint = os.path.basename(val)
                 j += 1 if "=" in sargs[j] else 2
                 continue
             j += 1
@@ -1359,6 +1507,9 @@ def check_docker(args, cwd, depth, env_host):
                                                                                          "/.config/gcloud/")):
                 return ask("`docker %s -v %s`" % (sub, m), "hands your credentials to a container")
         image_and_cmd = sargs[j:]
+        if sub == "run" and entrypoint in OBS_READS and image_and_cmd:  # e.g. --entrypoint amtool prom/alertmanager
+            return check_segment_words([entrypoint] + image_and_cmd[1:], cwd, depth + 1,
+                                       " ".join([entrypoint] + image_and_cmd[1:]))
         if sub == "run" and image_and_cmd and CLI_IMAGES.search(image_and_cmd[0]):
             tool = CLI_IMAGES.search(image_and_cmd[0]).group(2)
             tool = {"aws-cli": "aws", "azure-cli": "az", "cloud-sdk": "gcloud", "google-cloud-cli": "gcloud",
@@ -1558,7 +1709,7 @@ DELETERS = {"rm", "rmdir", "unlink", "shred", "srm"}
 # Tools with their own checker above; a script or test that starts one by name gets checked.
 INFRA_NAMES = {"aws", "aws2", "az", "gcloud", "doctl", "kubectl", "oc", "helm", "terraform", "tofu", "terragrunt",
                "pulumi", "ansible", "ansible-playbook", "ssh", "scp", "rsync", "git", "docker", "vault", "op", "sops",
-               "gh", "curl", "wget"}
+               "gh", "curl", "wget", *OBS_READS}
 
 # Programs that reach infrastructure, a remote or shared service, or change this machine beyond the project.
 # Everything else that isn't checked above is a local program and runs.
@@ -1865,6 +2016,8 @@ def check_segment_words(words, cwd, depth, raw, stdin_bodies=()):
                 a.startswith("--repair") for a in args):
             return None
         return ask("`%s %s`" % (name, " ".join(verbs[:1])), "is not a known read-only %s command" % name)
+    if name in OBS_READS or name == "grafana":
+        return check_obs(name, args)
     if name in LOAD_TOOLS:
         verbs = positional(args)
         if name == "k6" and verbs[:1] in (["version"], ["inspect"], ["help"]) or args in (["--version"], ["-h"],

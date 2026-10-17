@@ -9,7 +9,7 @@ loosenings this guard makes on purpose: the user's choice of cloud profile, tunn
 ssh reads with the user's own ssh config, local git commits, local docker, make targets and scripts whose contents
 are checked line by line."""
 import importlib.util
-import json, os, subprocess, sys, tempfile
+import json, os, shutil, subprocess, sys, tempfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 GUARD = os.path.join(ROOT, "templates", "profiles", "devops", "guard.py")
@@ -761,6 +761,72 @@ PROJECT_CASES = [
 ]
 TF_CASES = [(EXTERNAL, "terraform plan", "ask"), (UNMOCKED, "terraform test", "ask"), (REALPROV, "terraform test", "ask"),
             (REMOTEMOD, "terraform plan", "ask"), (CLEAN, "terraform test", "allow"), (CLEAN, "terraform plan", "allow")]
+# `terraform show -json` piped to jq: runs when the filter prints only addresses, actions, key names and the
+# sensitive/unknown masks; asks when it can print an attribute value. Each "allow" filter is also run through the
+# real jq on PLAN_JSON below, and must not print any of its planted secrets.
+SHOW = "terraform -chdir=IaC/environment/prod show -json terraform_plan.out | jq "
+TF_JSON_CASES = [
+    (SHOW + "-c --arg e prod '.resource_changes[] | select(.change.actions==[\"update\"]) | .change as $c | {env:$e, "
+     "addr: .address, changed_keys: [ ($c.after|keys[]) as $k | select(($c.before[$k]) != ($c.after[$k]) or "
+     "($c.after_unknown[$k]//false) != false) | $k ], sensitive_keys: ([($c.after_sensitive//{}) | to_entries[] | "
+     "select(.value==true) | .key])}'", "allow"),
+    (SHOW + "-c '.resource_changes[] | {addr: .address, actions: .change.actions}'", "allow"),
+    (SHOW + "-r '.resource_changes[] | select(.change.actions != [\"no-op\"]) | \"\\(.change.actions | join(\",\")) \\(.address)\"'", "allow"),
+    (SHOW + "-r '.resource_changes[] | [.address, (.change.actions|join(\"/\"))] | @tsv'", "allow"),
+    (SHOW + "-r '.resource_changes[] | select(.change.after.name == \"x\") | .address'", "allow"),
+    (SHOW + "-c '.resource_changes[] | {a: .address, k: (.change.after | keys)}'", "allow"),
+    (SHOW + "'.resource_changes[] | .change.after_unknown | to_entries'", "allow"),
+    (SHOW + "'.'", "ask"), (SHOW.rstrip(), "ask"), (SHOW + "'.resource_changes[].change'", "ask"),
+    (SHOW + "'.resource_changes[0]'", "ask"), (SHOW + "'.resource_changes[] | .change.after'", "ask"),
+    (SHOW + "'.resource_changes[] | .change[\"after\"]'", "ask"), (SHOW + "--arg f after '.resource_changes[] | .change[$f]'", "ask"),
+    (SHOW + "'.resource_changes[] | .change | to_entries'", "ask"), (SHOW + "'.resource_changes[] | .change | tostring'", "ask"),
+    (SHOW + "-c '.resource_changes[] | .change as $c | {a: .address, c: $c}'", "ask"),
+    (SHOW + "-r '.resource_changes[] | \"\\(.address) \\(.change.after.password)\"'", "ask"),
+    (SHOW + "'.resource_changes[] | select(.change.after | debug) | .address'", "ask"),
+    (SHOW + "'.resource_changes[] | {after}'", "ask"), (SHOW + "'.resource_changes | map(.change)'", "ask"),
+    (SHOW + "'.resource_changes[] | .change // empty'", "ask"), (SHOW + "'.resource_changes | first'", "ask"),
+    (SHOW + "'.planned_values'", "ask"), (SHOW + "-f filter.jq", "ask"),
+    ("for e in nonprod prod; do " + SHOW.replace("prod ", "$e ") + "-c '.resource_changes[] | {a: .address}'; done", "allow"),
+]
+PLAN_JSON = json.dumps({
+    "variables": {"pw": {"value": "S3CRET-var"}},
+    "planned_values": {"root_module": {"resources": [{"address": "a", "values": {"password": "S3CRET-pv"}}]}},
+    "resource_changes": [{"address": "module.db.x.c", "change": {
+        "actions": ["update"], "before": {"name": "x", "password": "S3CRET-before"},
+        "after": {"name": "x", "password": "S3CRET-after", "uri": "S3CRET-uri"},
+        "after_unknown": {"uri": True}, "after_sensitive": {"password": True, "uri": True}}}]})
+# Monitoring CLIs (devops/observability.md): reads and file checks run; test alerts, silences, rule and config syncs,
+# metric pushes and Grafana admin commands ask, also when started through a container's entrypoint.
+OBS = fixture("obs", {".env": "GRAFANA_URL=https://grafana.acme.example\nGRAFANA_TOKEN=dummy\n"})
+OBS_CASES = [
+    ("promtool check rules rules/*.yml", "allow"), ("promtool test rules tests/*.yml", "allow"),
+    ("promtool query instant http://localhost:9090 'up == 0'", "allow"), ("promtool push metrics http://x/write", "ask"),
+    ("amtool check-config alertmanager.yml", "allow"), ("amtool silence", "allow"), ("amtool alert", "allow"),
+    ("amtool --alertmanager.url http://am:9093 silence query -o json", "allow"),
+    ("amtool --alertmanager.url=http://am:9093 alert query alertname=Watchdog", "allow"),
+    ("amtool config routes test --config.file=alertmanager.yml severity=critical", "allow"),
+    ("amtool --alertmanager.url=http://am:9093 alert add GoodBehaviorTest severity=warning", "ask"),
+    ("amtool --alertmanager.url=http://am:9093 silence add alertname=X --comment=x --duration=1h", "ask"),
+    ("amtool --alertmanager.url=http://am:9093 silence expire abc", "ask"), ("amtool silence import < s.json", "ask"),
+    ("logcli --addr=http://loki:3100 query '{app=\"x\"}' --since=10m", "allow"),
+    ("logcli --addr=http://loki:3100 series '{}' --analyze-labels", "allow"),
+    ("mimirtool rules lint rules.yml", "allow"), ("mimirtool rules diff --address=http://m rules.yml", "allow"),
+    ("mimirtool rules sync --address=http://m rules.yml", "ask"), ("mimirtool alertmanager load am.yml", "ask"),
+    ("lokitool rules sync rules.yml", "ask"), ("grafana-cli plugins ls", "allow"),
+    ("grafana-cli plugins install x", "ask"), ("grafana cli admin reset-admin-password x", "ask"),
+    ("grafanactl resources pull", "allow"), ("grafanactl resources push", "ask"),
+    ("docker run --rm -v \"$PWD\":/w -w /w --entrypoint promtool prom/prometheus:v3.5.0 check rules r.yml", "allow"),
+    ("docker run --rm --entrypoint amtool prom/alertmanager:v0.28.1 --alertmanager.url=http://am:9093 alert query", "allow"),
+    ("docker run --rm --entrypoint amtool prom/alertmanager:v0.28.1 --alertmanager.url=http://am:9093 silence add a=b", "ask"),
+    ("docker run --rm grafana/logcli:3.5.0 --addr=http://loki:3100 query '{a=\"b\"}'", "allow"),
+    ("docker run --rm grafana/mimirtool:2.17.0 rules sync --address=http://m r.yml", "ask"),
+    ("curl -s -X POST http://localhost:9090/-/reload", "ask"),
+    # Grafana reads with the token run when the project's .env names the Grafana URL; writes still ask
+    ("curl -s -H \"Authorization: Bearer $GRAFANA_TOKEN\" https://grafana.acme.example/api/search", "allow"),
+    ("curl -s -X POST -H \"Authorization: Bearer $GRAFANA_TOKEN\" https://grafana.acme.example/api/dashboards/db", "ask"),
+    ("curl -s -H \"Authorization: Bearer $GRAFANA_TOKEN\" https://grafana.other.example/api/search", "ask"),
+]
+
 TOOL_CASES = [
     ("Read", {"file_path": "{P}/.env"}, "deny"), ("Read", {"file_path": "{P}/envlink"}, "deny"),
     ("Read", {"file_path": "{P}/.env.example"}, "allow"), ("Read", {"file_path": "~/.aws/credentials"}, "deny"),
@@ -790,6 +856,16 @@ def main():
         expect(cmd[:100], want, bash(cmd))
     for cmd, want in PROJECT_CASES:
         expect("[project] " + cmd[:90], want, bash(cmd, PROJECT))
+    for cmd, want in TF_JSON_CASES:
+        got = bash(cmd)
+        expect("[tf-json] " + cmd[len(SHOW):][:90], want, got)
+        if got == "allow" and shutil.which("jq"):  # the filter really prints no value
+            r = subprocess.run(cmd.split("| ", 1)[1].split("; done")[0], shell=True,
+                               input=PLAN_JSON, capture_output=True, text=True)
+            if "S3CRET" in r.stdout + r.stderr or r.returncode:
+                failures.append("[tf-json] allowed filter printed a secret or failed: %s" % cmd[len(SHOW):][:90])
+    for cmd, want in OBS_CASES:
+        expect("[obs] " + cmd[:90], want, bash(cmd, OBS))
     for root, cmd, want in TF_CASES:
         expect("[%s] %s" % (os.path.basename(root), cmd), want, bash(cmd, root))
     for tool, inp, want in TOOL_CASES:

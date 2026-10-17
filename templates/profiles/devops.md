@@ -33,7 +33,7 @@ truth-source: the live environment (provider APIs, real network paths, the state
   cost cut that weakens reliability is a contradiction between lenses: flag it, don't pick silently. **Code:** the
   Terraform, pipelines, scripts and charts themselves: secrets in code and git history, misconfigurations, unsafe
   pipelines, lint, copy-paste and dead code (rules and probes in `devops/baseline.md`, Code, plus `devops/terraform.md`,
-  `devops/shell.md`, `devops/helm.md`, `devops/docker.md`, `devops/ansible.md`, `devops/ci.md`, `devops/python.md`). Security, performance, cost and code also each get their own checklist
+  `devops/shell.md`, `devops/helm.md`, `devops/docker.md`, `devops/ansible.md`, `devops/ci.md`, `devops/python.md`, and the monitoring configs in `devops/observability.md`). Security, performance, cost and code also each get their own checklist
   batch: see "Audit coverage" below. Cost and performance are read together: a saving is judged against the
   performance target, and a performance fix against what it costs.
 - **pause points:** **every** change to infrastructure, in **any** environment, dev included: an apply, destroy or
@@ -300,7 +300,8 @@ observability, backup/DR, performance, cost). It always comes with this profile.
 per IaC tool in use (`terraform`: safe plan and apply, state, environments, code; `shell`: writing and running scripts
 safely; `kubernetes`: clusters, workloads and their attack
 surface, OpenBao for secrets; `helm`: charts and releases; `docker`: Dockerfiles and images; `ansible`: playbooks
-and roles; `ci`: pipeline safety, speed and cost; `python`: Python ops scripts).
+and roles; `ci`: pipeline safety, speed and cost; `python`: Python ops scripts; `observability`: the monitoring
+stack itself, Prometheus, Alertmanager, Loki and Grafana: alerts that reach a person, logs, and who can reach them).
 
 ## Done-gate questions
 
