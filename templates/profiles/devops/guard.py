@@ -898,6 +898,34 @@ PROTECTED_HINT = re.compile(r"\.claude|\.mcp\.json|\.ssh|\.aws|\.kube|\.git/|\.g
                             r"/etc/|site-packages|LaunchAgents|\.terraform|expanduser|Path\.home|HOME")
 
 
+def py_code_writes(code):
+    """True when inline Python could write a file or start a program, so its arguments may name what it changes."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return True
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and n.id in {"exec", "eval", "compile", "__import__", "getattr", "open"} and \
+                not any(isinstance(c, ast.Call) and c.func is n for c in ast.walk(tree)):
+            return True  # aliased or passed around: what it does can't be read
+        if not isinstance(n, ast.Call):
+            continue
+        name = n.func.id if isinstance(n.func, ast.Name) else n.func.attr if isinstance(n.func, ast.Attribute) else ""
+        if name == "open":
+            mode = n.args[1] if len(n.args) > 1 else next((k.value for k in n.keywords if k.arg in {"mode", "flags"}), None)
+            if mode is not None and not (isinstance(mode, ast.Constant) and not PY_WRITE_MODE.search(str(mode.value))):
+                return True
+        elif name in PY_SUBPROCESS_CALLS | {"system", "popen", "exec", "eval", "compile", "__import__", "getattr",
+                                            "remove", "unlink", "rmdir", "rmtree", "rename", "replace", "move", "chmod",
+                                            "copy", "copyfile", "copy2", "copytree", "write_text", "write_bytes",
+                                            "symlink_to", "touch", "mkdir", "makedirs", "truncate", "dump"}:
+            if name == "replace" and len(n.args) >= 2 and not (isinstance(n.func, ast.Attribute) and isinstance(
+                    n.func.value, ast.Name) and n.func.value.id in {"os", "shutil"}):
+                continue  # str.replace(old, new)
+            return True
+    return False
+
+
 def check_python_code(code, cwd, label="inline Python"):
     try:
         tree = ast.parse(code)
@@ -911,6 +939,10 @@ def check_python_code(code, cwd, label="inline Python"):
                     literals.setdefault(t.id, set()).add(node.value.value)
     global PY_LITERALS
     PY_LITERALS = literals
+    # The protected-path hint is read from names and path-like strings, so prose naming `/.ssh/` doesn't count
+    hint_text = " ".join(n.id if isinstance(n, ast.Name) else ast.unparse(n) if isinstance(n, ast.Attribute) else n.value
+                         for n in ast.walk(tree) if isinstance(n, (ast.Name, ast.Attribute)) or
+                         isinstance(n, ast.Constant) and isinstance(n.value, str) and not re.search(r"\s", n.value))
     hit = secret_use = None
     runners = {"subprocess"}  # names bound to the subprocess module or its functions
     for node in ast.walk(tree):
@@ -966,7 +998,7 @@ def check_python_code(code, cwd, label="inline Python"):
                 for kw in node.keywords:
                     if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
                         mode = str(kw.value.value)
-                if PY_WRITE_MODE.search(mode) and not paths and PROTECTED_HINT.search(code):
+                if PY_WRITE_MODE.search(mode) and not paths and PROTECTED_HINT.search(hint_text):
                     hit = worse(hit, ask("%s writing a computed path" % label, "the path comes from outside the code or "
                                          "points near a protected location"))
                 for p in paths:
@@ -2150,6 +2182,8 @@ def check_segment_words(words, cwd, depth, raw, stdin_bodies=()):
         return hit
     if name in {"python", "python3"}:
         given = [a for k, a in enumerate(args) if not a.startswith("-") and not (k and args[k - 1] in {"-c", "-m"})]
+        if "-c" in args and args.index("-c") + 1 < len(args) and not py_code_writes(args[args.index("-c") + 1]):
+            given = []  # `python3 -c 'print(quote(sys.argv[1]))' "$1"`: code that writes nothing can't write its args
         hit_arg = next((a for a in given if is_protected(a, cwd)), None)
         if hit_arg:
             return ask("`python` given `%s`" % hit_arg, "may write the guard, its settings or a protected file")
@@ -2389,6 +2423,44 @@ FUNC_DEF = re.compile(r"(?m)(?:^|[;&|{(]|\bthen|\bdo|\belse)\s*(?:function\s+([A
 TOP_ASSIGN = re.compile(r"(?m)(?:^|[;&\n])\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=([^\s;&|`$()'\"<>]+)(?=\s*(?:;|&&|\n|$))")
 
 
+# `set -a; . ./.env`: the project's own .env is loaded, so its base URLs are known values
+ENV_SOURCED = re.compile(r"(?:^|[;&|\n(]|\bthen|\bdo)\s*(?:\.|source)\s+(?:\./)?\.env(?=[\s;&|)]|$)")
+
+
+def env_base_urls(cwd):
+    """NAME -> https://host[:port] from the project's .env. Only bare base URLs: a URL with a path or query may
+    carry a secret (a webhook key), and these values are substituted into the command being checked."""
+    text = read_text(os.path.join(repo_root(cwd), ".env")) or ""
+    return {m.group(1): m.group(2) for m in re.finditer(
+        r"(?m)^\s*(?:export\s+)?([A-Za-z_]\w*)=['\"]?(https://[A-Za-z0-9.-]+(?::\d+)?)/?['\"]?\s*$", text)}
+
+
+def path_arg_functions(command):
+    """`get() { curl "$G$1"; }; get /api/x; get /api/y`: when every call passes a literal path starting with `/`,
+    `$1` in the body is that path, so it can't change the host. Returns the command with `$1` rewritten to a path."""
+    if re.search(r"(?:^|[;&|\n(]|\bthen|\bdo|\bexec)\s*\"?\$|\$[@*]|\beval\b", command):
+        return command  # a computed command could call the function with anything
+    for m in re.finditer(r"(?m)(?:^|[;&|\n])\s*(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\s*\)\s*\{", command):
+        name, start, depth, i = m.group(1), m.end(), 1, m.end()
+        while i < len(command) and depth:
+            if command.startswith("${", i):
+                i = command.index("}", i) + 1 if "}" in command[i:] else len(command)
+                continue
+            depth += {"{": 1, "}": -1}.get(command[i], 0)
+            i += 1
+        body, rest = command[start:i - 1], command[:m.start()] + " " + command[i:]
+        if not re.search(r"\$\{?1\b", body):
+            continue
+        firsts = [a.strip("\"'") for a in re.findall(
+            r"(?:^|[;&|\n(]|\bthen|\bdo)\s*%s(?![\w-])(?:\s+(\"[^\"$`\\]*\"|'[^']*'|[^\s;&|<>\"'`$\\]+))?"
+            % re.escape(name), rest, re.M)]
+        if len(firsts) != len(re.findall(r"(?<![\w$-])%s(?![\w-])" % re.escape(name), rest)):
+            continue  # named somewhere other than at the start of a command (an argument, a string): can't tell
+        if firsts and all(f.startswith("/") for f in firsts):
+            command = command[:start] + re.sub(r"\$\{1\}|\$1(?!\d)", "/__path__", body) + command[i - 1:]
+    return command
+
+
 def substitute(text, known):
     for name, value in known.items():
         text = re.sub(r"\$\{%s\}|\$%s(?![A-Za-z0-9_])" % (name, name), lambda _m: value, text)
@@ -2409,6 +2481,7 @@ def check_command(command, cwd, depth=0, raw=None, test_mode=None):
     if re.search(r"\bcase\b", command):  # `a|b)` case patterns are words to match, not commands to run
         command = CASE_PATTERNS.sub(r"\1\2", command)
     raw = raw if raw is not None else command
+    command = path_arg_functions(command)
     # `name(){ body; }` mid-line: check the body as a { ...; } group; calls to `name` are then known (FUNCS)
     command = re.sub(r"(^|[;&|\n]\s*)(?:function\s+)?[A-Za-z_][\w-]*\s*\(\s*\)\s*\{", r"\1{ ", command)
     outer, known = KNOWN, dict(KNOWN)
@@ -2419,6 +2492,10 @@ def check_command(command, cwd, depth=0, raw=None, test_mode=None):
     for n, v in tops:
         if names.count(n) == 1 and n not in known and not DANGEROUS_ENV.match(n):
             known[n] = v  # assigned once, to a literal: the same value wherever it's used
+    if ENV_SOURCED.search(command):
+        for n, v in env_base_urls(cwd).items():
+            if n not in names and n not in known and not re.search(r"(?:^|[\s;&|(])%s\+?=" % n, command):
+                known[n] = v
     for m in MKTEMP_ASSIGN.finditer(command):
         known[m.group(1)] = "/tmp/__mktemp__"
     for m in STATUS_ASSIGN.finditer(command):
