@@ -52,6 +52,7 @@ How to run probes:
 Audit the code itself, not only what it built: Terraform, pipelines, scripts, charts and Dockerfiles. Run every
 scanner on the whole repo (and the secret scanner on the whole git history), not only on the files you changed.
 These are file reads, safe to run without asking. A tool that isn't installed is a "not checked" row, never a pass.
+The scanners named below are defaults: where the project already runs its own for the same rule, use that.
 
 - **rule:** No secret is in the repo or its history. Deleting a file does not remove it from history: a key that was
   ever committed must be revoked and replaced.
@@ -63,10 +64,12 @@ These are file reads, safe to run without asking. A tool that isn't installed is
   buckets, privileged containers, missing logging.
   **probe:** `trivy config --severity HIGH,CRITICAL .` and `checkov -d . --compact --quiet` on the whole repo; every
   finding is fixed or has a written reason.
-- **rule:** Terraform passes its linter: no unused variables or outputs, no deprecated syntax, version constraints
+- **rule:** IaC code passes its linter: no unused variables or outputs, no deprecated syntax, version constraints
   set.
-  **probe:** `tflint --recursive` prints no warnings (rule `terraform_unused_declarations` finds dead variables).
-- **rule:** Shell scripts pass ShellCheck.
+  **probe:** the IaC tool's linter prints no warnings. Terraform/OpenTofu: `tflint --recursive` (rule
+  `terraform_unused_declarations` finds dead variables); other tools: their own linter (`ansible-lint`, `cfn-lint`,
+  `bicep lint`, …).
+- **rule:** Shell scripts pass a linter (ShellCheck).
   **probe:** `git ls-files '*.sh' | xargs shellcheck -S warning` prints nothing.
 - **rule:** Pipelines are safe: third-party actions pinned to a full commit SHA, the token has only the permissions
   the job needs, and no untrusted input (PR titles, branch names, issue text) is pasted into a `run:` step.
@@ -88,7 +91,8 @@ These are file reads, safe to run without asking. A tool that isn't installed is
 
 - **rule:** Every sensitive key (database passwords, API tokens, signing and encryption keys, webhook secrets, cloud
   keys) is stored in the platform's secret manager: AWS Secrets Manager or SSM Parameter Store `SecureString`, Azure
-  Key Vault, GCP Secret Manager, DigitalOcean Secrets Manager, or OpenBao/Vault on-prem and in clusters. Code,
+  Key Vault, GCP Secret Manager, DigitalOcean Secrets Manager, or a self-hosted one (OpenBao, Vault, Infisical, …)
+  on-prem and in clusters; whichever the project already uses counts. Code,
   pipelines and workloads fetch it by reference at run time. A key anywhere else is a finding, "only dev" included:
   code or git history, `.tfvars`, Terraform state outputs, CI variables, app specs, plain environment variables, a
   Kubernetes Secret applied by hand, a file on a server, an image, a CI log. (Replaces the shorter "secrets live in a
@@ -277,7 +281,7 @@ place of measurement is not evidence.
   server or what it calls; at connect or TLS it is distance or the network.
 - **rule:** Capacity is measured, not guessed: a load test in non-prod finds where latency or errors break the
   target, which resource saturates first, and the headroom over the expected peak (aim for 2×).
-  **probe:** **(the user runs it, never Claude)** a stepped load test, for example k6 with the script under "Load
+  **probe:** **(the user runs it, never Claude)** a stepped load test with the team's load tool (for example k6, with the script under "Load
   test" below. Never run a load test during an audit or as a check: real load can take down a shared or production
   environment. Suggest it instead: hand the user the script, the command, which environment to point it at
   (non-prod), and what to watch (CPU, memory, database connections, queue depth). Running it is their call. If they
@@ -330,7 +334,8 @@ place of measurement is not evidence.
   can't wait on prod traffic for, suggest the load test above in non-prod, before and after; the user decides
   whether to run it.
 
-**Load test (suggest it; the user runs it).** A stepped k6 script (k6 2.x). It raises the request rate in steps and
+**Load test (suggest it; the user runs it).** A sample stepped k6 script (k6 2.x); if the team already uses another
+load tool (JMeter, Gatling, Locust, …), write the same steps and thresholds in that instead. It raises the request rate in steps and
 fails when p95 goes over 500 ms or more than 1% of requests fail (k6 then exits 99). Set the steps and thresholds
 from the written target. Claude writes and hands over this script but never runs it: load sent at the wrong host can
 break a production environment, so whether, when and where to run it is the user's decision.

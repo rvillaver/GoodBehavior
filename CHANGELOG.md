@@ -3,6 +3,21 @@
 Every entry here is a unit a downstream project will 3-way-merge via `/update-goodbehavior` — write entries so an
 adopter skimming before an update knows what's coming and why.
 
+## 2026-10-19 — devops: the project's stack, not ours; the guard judges unknown tools by shape
+
+- The devops profile and its guides no longer push tools: a new section, "The project's stack, not ours", says every
+  named tool is an example or a default. Scanners start with the ones the project already runs; the secret manager is
+  whichever the project uses (OpenBao is one option, not the suggestion); the baseline's linter rule covers any IaC
+  tool; k6 is a sample load script; `.secret` is a fallback when the project has no credential setup of its own.
+- The guard used to run any CLI it didn't know by name (`upctl server delete`, `supabase db reset`, `neonctl branches
+  delete` all ran) and ask for every call of the remote tools it only listed (`hcloud server list` asked). Now a
+  tool with no checker of its own is judged by its action words and by whether it reaches a remote: a
+  `remote:` line in the new `.claude/goodbehavior/guard-tools.txt`, a credential named after it in `.env` or the
+  environment, or a saved login in HOME. Writes ask, reads run, secret reads are denied. Data store clients
+  (`psql`, `redis-cli`, …) still ask for everything.
+- `/adopt-goodbehavior` writes `guard-tools.txt` from the tools the project says it uses. Existing installs: add
+  `remote: <tool>` lines for the CLIs you use that log in without a token variable or a saved login file.
+
 ## 2026-10-17 — devops guard: reading a saved plan's changed fields runs
 
 - `terraform show -json <plan> | jq …` now runs when the filter prints only addresses, actions, key names and the

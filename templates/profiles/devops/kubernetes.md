@@ -130,12 +130,14 @@ Write findings in the "Security findings" format from `devops.md` (risk, how lik
   where its value came from. Sync health: `kubectl get externalsecrets -A` shows `SecretSynced`. Plain environment
   variables that look sensitive:
   `kubectl get deploy,statefulset,daemonset,cronjob -A -o json | jq -r '.. | .containers? // empty | .[] | .env[]? | select(.value) | .name' | sort -u | grep -iE 'pass|secret|token|key'`.
-- **rule:** If the cluster has no secrets manager, suggest **OpenBao** (open source, a Linux Foundation fork of
-  Vault, same API). Run it from its Helm chart in HA mode with Raft storage, auto-unseal through a cloud KMS or a
+- **rule:** If the cluster has no secrets manager, suggest one that fits the platform, with the options side by side:
+  the cloud's own manager fed through External Secrets or the CSI driver (simplest on EKS/AKS/GKE), or a self-hosted
+  one. For self-hosted, **OpenBao** is one option (open source, a Linux Foundation fork of Vault, same API): run it
+  from its Helm chart in HA mode with Raft storage, auto-unseal through a cloud KMS or a
   transit key, the Kubernetes auth method so workloads log in with their service account, and an audit device on.
   Feed workloads through External Secrets (its Vault provider works with OpenBao) or the OpenBao agent injector. This
-  is a suggestion; a cloud secret manager or Vault serves the same rule.
-  **probe:** `kubectl get pods -A -l app.kubernetes.io/name=openbao` shows the server pods running; inside one,
+  is a suggestion; any manager that workloads read by reference serves the same rule.
+  **probe:** for the manager in use. OpenBao, for example: `kubectl get pods -A -l app.kubernetes.io/name=openbao` shows the server pods running; inside one,
   `bao status` shows `Sealed false` and `HA Enabled true`; `bao auth list` includes `kubernetes/`;
   `bao audit list` shows a device. None of these print secret values.
 - **rule:** An admission policy engine (Kyverno or Gatekeeper) enforces what PSA can't: signed images, required

@@ -7,6 +7,8 @@ like a developer's machine, local work runs, and only what reaches past the proj
 
   run    local work: reads, edits and deletes inside the project or temp folders, local git (commit, rm,
          rebase), tests, linters, builds, scratch scripts, unknown local programs, cloud reads, plans, tunnels.
+         A tool with no checker of its own is judged by shape: its action words (list/get vs delete/deploy)
+         and whether it reaches a remote (guard-tools.txt, a credential variable or .env key, a config in HOME).
          Commands are still read part by part: quotes, variables, $(...), heredocs, pipes, `make` recipes,
          scripts and the scripts they source, Python (its subprocess calls too), node tests, bats files,
          docker images that wrap a cloud CLI, and ssh remote commands.
@@ -1775,6 +1777,159 @@ PKG_READ = {"list", "ls", "show", "info", "search", "freeze", "outdated", "deps"
             "check", "help", "home", "desc", "uses", "which", "current", "where", "env", "inspect", "policy"}
 
 
+# Tools the guard has no checker for are judged by shape, not by name. Most cloud and SaaS CLIs read as
+# `<tool> <thing...> <action>`: the action words say whether it reads or changes something. Whether the tool reaches
+# a remote service is judged from signals the project and machine already give: the project's tool list
+# (.claude/goodbehavior/guard-tools.txt), a credential variable or .env key named after the tool, or a config folder
+# for it in HOME. A write word asks; only read words run; anything else asks for a remote tool and runs for a local one.
+WRITE_VERBS = {
+    "create", "new", "add", "insert", "put", "post", "set", "unset", "update", "upsert", "edit", "patch", "modify",
+    "change", "replace", "rename", "move", "mv", "copy", "cp", "clone", "fork", "delete", "del", "remove", "rm",
+    "rmi", "destroy", "drop", "truncate", "flush", "flushall", "flushdb", "purge", "prune", "wipe", "erase", "clear",
+    "reset", "nuke", "kill", "terminate", "stop", "start", "restart", "reboot", "shutdown", "halt", "poweroff",
+    "power", "suspend", "resume", "pause", "unpause", "freeze", "thaw", "up", "down", "run", "exec", "invoke",
+    "trigger", "apply", "deploy", "undeploy", "redeploy", "release", "publish", "unpublish", "push", "upload",
+    "sync", "import", "promote", "demote", "rollout", "rollback", "revert", "restore", "migrate", "upgrade",
+    "downgrade", "install", "uninstall", "provision", "deprovision", "decommission", "teardown", "scale", "resize",
+    "rebuild", "reimage", "deallocate", "allocate", "attach", "detach", "associate", "disassociate",
+    "assign", "unassign", "bind", "unbind", "link", "unlink", "connect", "disconnect", "enable", "disable",
+    "activate", "deactivate", "approve", "reject", "merge", "close", "reopen", "lock", "unlock", "grant", "revoke",
+    "rotate", "renew", "regenerate", "issue", "sign", "tag", "untag", "label", "unlabel", "annotate", "cordon",
+    "uncordon", "drain", "taint", "untaint", "failover", "switchover", "reconcile", "refresh", "login", "logout",
+    "register", "deregister", "unregister", "subscribe", "unsubscribe", "send", "notify", "cancel", "abort",
+    "accept", "decline", "authorize", "deauthorize", "invite", "transfer", "expire", "archive", "unarchive",
+    "snapshot", "backup", "commit", "write", "mount", "unmount", "expose", "open", "ssh", "console", "shell",
+    "tunnel", "proxy", "forward", "listen", "serve",
+}
+READ_VERBS = {
+    "list", "ls", "get", "show", "describe", "view", "status", "info", "inspect", "logs", "log", "events", "top",
+    "history", "version", "versions", "help", "whoami", "me", "account", "search", "find", "query", "lookup",
+    "check", "validate", "lint", "diff", "plan", "preview", "explain", "summary", "stats", "metrics", "health",
+    "ping", "doctor", "audit", "watch", "tail", "config", "context", "contexts", "current", "regions", "zones",
+    "types", "sizes", "images", "count", "exists", "print", "read", "cat", "dry-run", "dryrun", "completion",
+    # local work: build tools and package managers keep registry tokens in the environment too
+    "build", "test", "tests", "compile", "fmt", "format", "bench", "generate", "gen", "package", "assemble",
+}
+SECRET_NOUNS = {"secret", "secrets", "token", "tokens", "password", "passwords", "passwd", "credential",
+                "credentials", "creds", "apikey", "apikeys"}
+REVEAL_VERBS = {"get", "show", "read", "reveal", "export", "download", "print", "value", "values", "access", "view",
+                "cat", "decrypt", "dump"}
+# On a remote tool these can print the app's settings, secrets included (`heroku config`, `netlify env:list`).
+ENV_NOUNS = {"env", "envs", "environment", "variables", "vars", "config", "configs"}
+REVEAL_FLAGS = re.compile(r"^--?(reveal|plain|plaintext|show-secrets?|show-values?|decrypt|unmask|raw|"
+                          r"with-decryption|show-token|insecure-print)(=|$)")
+# Remote tools whose reads still ask: a "read" of a data store or a scanner can still print data or hit a network.
+KEEP_ASKING = {"psql", "mysql", "mariadb", "mongosh", "mongo", "redis-cli", "cqlsh", "sqlcmd", "pg_dump",
+               "pg_restore", "mysqldump", "etcdctl", "kcat", "nats", "kafka-console-producer", "telnet", "ftp",
+               "lftp", "socat", "nmap", "masscan", "mosh", "ssh-copy-id", "aws-nuke", "cloud-nuke", "terraformer",
+               "cf-terraforming", "s3fs", "kubectx", "kubens", "stripe"}
+CRED_WORDS = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|USERNAME|ENDPOINT|API|URL|HOST)")
+CRED_TEXT = re.compile(r"(?im)^\s*[\"']?[\w.-]*(token|api[_-]?key|secret|password|passwd|access[_-]?key|auth)[\w.-]*"
+                       r"[\"']?\s*[:=]\s*\S")
+
+
+def tool_stems(name):
+    """`linode-cli` -> {linode-cli, linode}; `neonctl` -> {neonctl, neon}; `upctl` -> {upctl, up}."""
+    base = name.lower()
+    stems = {base}
+    for suffix in ("-cli", "_cli", "cli", "-ctl", "ctl", "adm", "-admin", "admin"):
+        if base.endswith(suffix) and len(base) > len(suffix):
+            stems.add(base[:-len(suffix)].rstrip("-_"))
+    return {t for t in stems if t}
+
+
+def project_tools(cwd):
+    """`remote: <tool>` and `local: <tool>` lines in .claude/goodbehavior/guard-tools.txt (adoption writes it from
+    the tools the project says it uses; the user can add lines). The file is protected, so Claude can't edit it
+    without asking."""
+    text = read_text(os.path.join(repo_root(cwd), ".claude", "goodbehavior", "guard-tools.txt")) or ""
+    remote, local = set(), set()
+    for line in text.splitlines():
+        m = re.match(r"^\s*(remote|local)\s*:\s*([^\s#]+)", line)
+        if m:
+            (remote if m.group(1) == "remote" else local).add(m.group(2))
+    return remote, local
+
+
+def remote_signal(name, cwd):
+    """Why a program the guard has no checker for looks like it reaches a remote service, or None."""
+    remote, local = project_tools(cwd)
+    if name in local:
+        return None
+    if name in remote:
+        return "is listed as a remote tool in .claude/goodbehavior/guard-tools.txt"
+    if INFRA_TOOLS.get(name) == _REMOTE:
+        return _REMOTE
+    stems = {t for t in tool_stems(name) if len(t) >= 3}
+    prefixes = tuple(t.upper().replace("-", "_") + "_" for t in stems)
+
+    def cred_var(var):
+        var = var.upper()
+        return any(var.startswith(p) and CRED_WORDS.search(var[len(p):]) for p in prefixes)
+    for var in os.environ:
+        if cred_var(var):
+            return "has credentials in the environment (`%s`)" % var  # weak: registry tokens look the same
+    root = repo_root(cwd)
+    for f in (".env", ".env.example", ".secret"):
+        for m in re.finditer(r"(?m)^\s*(?:export\s+)?([A-Za-z_]\w*)\s*=", read_text(os.path.join(root, f)) or ""):
+            if cred_var(m.group(1)):
+                return "has credentials in the project's `%s` (`%s`)" % (f, m.group(1))
+    # A config in HOME counts only when it holds a credential: editors and linters keep configs there too.
+    for t in stems:
+        for c in (os.path.join(HOME, ".config", t), os.path.join(HOME, "." + t),
+                  *(os.path.join(HOME, ".config", t + ext) for ext in (".yaml", ".yml", ".toml", ".json", ".ini")),
+                  os.path.join(HOME, "Library", "Application Support", t)):
+            files = [c] if os.path.isfile(c) else sorted(glob.glob(os.path.join(c, "*")) + glob.glob(
+                os.path.join(c, "*", "*")))[:30] if os.path.isdir(c) else []
+            for f in files:
+                if os.path.isfile(f) and os.path.getsize(f) <= 65_536 and CRED_TEXT.search(read_text(f) or ""):
+                    return "has a login saved in your home folder (`%s`)" % f.replace(HOME, "~", 1)
+    return None
+
+
+def verb_parts(word):
+    """`config:set` -> [config, set]; `delete-instance` -> [delete, instance]; `web-1` -> [web, 1]."""
+    return [p for p in re.split(r"[:._/-]+", word.lower()) if p]
+
+
+def check_by_shape(name, args, cwd):
+    """A program with no checker of its own: judge it by its action words and whether it reaches a remote."""
+    if args in (["--version"], ["version"], ["-v"], ["-V"], ["-h"], ["--help"], ["help"]):
+        return None
+    words = positional(args[:args.index("--")] if "--" in args else args)
+    words = [w for w in words if " " not in w and len(w) < 64]  # a quoted script or query is not an action word
+    parts = [p for w in words for p in [w.lower(), *verb_parts(w)]]
+    writes = [w for w in words if w.lower() in WRITE_VERBS or any(p in WRITE_VERBS for p in verb_parts(w))]
+    reads = [w for w in words if w.lower() in READ_VERBS or verb_parts(w)[:1] and verb_parts(w)[0] in READ_VERBS
+             or verb_parts(w)[-1:] and verb_parts(w)[-1] in READ_VERBS]
+    signal = remote_signal(name, cwd)
+    shown = " ".join([name] + words[:3])
+    if set(parts) & SECRET_NOUNS and (set(parts) & REVEAL_VERBS or any(REVEAL_FLAGS.match(a) for a in args)):
+        if signal:
+            return secret("`%s`" % shown, "looks like it prints a secret (the tool %s)" % signal)
+        return ask("`%s`" % shown, "looks like it reads a secret")
+    if not signal:
+        if name in project_tools(cwd)[1]:
+            return None  # listed as local in guard-tools.txt
+        if writes and set(parts) & {"destroy", "terminate", "deprovision", "decommission", "deallocate", "failover",
+                                    "teardown", "nuke", "poweroff", "deploy", "undeploy", "redeploy", "publish",
+                                    "rollout", "rollback", "provision", "switchover"}:
+            return ask("`%s`" % shown, "its action word usually reaches infrastructure or a remote service (mark the "
+                       "tool `local:` in .claude/goodbehavior/guard-tools.txt if it doesn't)")
+        return None  # a local program: it works on this machine, which git and the user can put back
+    if name in KEEP_ASKING:
+        return ask("`%s`" % name, INFRA_TOOLS.get(name, signal))
+    if writes:
+        return ask("`%s`" % shown, "`%s` changes something, and the tool %s" % (writes[0], signal))
+    if set(parts) & ENV_NOUNS:
+        return ask("`%s`" % shown, "can print the service's settings, secrets included, and the tool %s" % signal)
+    if reads:
+        return None  # only read words: a listing or a status
+    if signal.startswith("has credentials in the "):
+        return None  # a token variable alone is a weak signal (build tools keep registry tokens too): writes ask
+    return ask("`%s`" % shown, "the guard can't tell whether it reads or changes something, and the tool %s" % signal)
+
+
 def outside_project(path, cwd):
     """True when a path to delete lies outside the project and the temp folders (the user's other files)."""
     real = resolve(path, cwd)
@@ -2403,11 +2558,11 @@ def check_segment_words(words, cwd, depth, raw, stdin_bodies=()):
     if name == "act" and (bundled(args, {"-n", "--dryrun", "-l", "--list", "-g", "--graph", "--validate"})
                            or any(a.startswith("--dryrun") for a in args)):
         return None  # parses the workflows, starts nothing
-    if name in INFRA_TOOLS:
+    if name in INFRA_TOOLS and INFRA_TOOLS[name] != _REMOTE:
         if args in (["--version"], ["version"], ["-h"], ["--help"], ["help"]):
             return None
         return ask("`%s`" % name, INFRA_TOOLS[name])
-    return None  # a local program: it works on this machine, which git and the user can put back
+    return check_by_shape(name, args, cwd)
 
 
 MKTEMP_ASSIGN = re.compile(r"\b([A-Za-z_]\w*)=[\"']?\$\(\s*mktemp\b[^)]*\)")

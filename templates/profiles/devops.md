@@ -22,8 +22,8 @@ truth-source: the live environment (provider APIs, real network paths, the state
 - **audit lenses:** run each as its own pass, then compare. **Wiring:** does it work from the consumer's position
   (reachable, resolvable, allowed)? **Security:** the attack surface, judged against today's automated attacks (rules
   and probes in `devops/baseline.md`, Secrets and identity, Zero trust, Security and attack surface, and
-  `devops/kubernetes.md` for clusters; see "Security findings" below; if a cluster has no secrets manager, suggest
-  OpenBao, per `devops/kubernetes.md`). Every audit includes the **key inventory** (see "Audit coverage").
+  `devops/kubernetes.md` for clusters; see "Security findings" below; if there is no secrets manager, suggest one
+  that fits the platform the project already runs on). Every audit includes the **key inventory** (see "Audit coverage").
   **Reliability:** single points of failure, backups restore-tested, failover. **Drift:** code vs state vs live
   resource. **Performance:** does it meet its written latency, error-rate and peak-load target from the consumer's
   side: where the time goes, what saturates first, whether autoscaling keeps up, caching, placement, the database
@@ -32,8 +32,8 @@ truth-source: the live environment (provider APIs, real network paths, the state
   cost finding with all five parts of "Cost in every proposal": now, change, saving, performance and risk, way back. A
   cost cut that weakens reliability is a contradiction between lenses: flag it, don't pick silently. **Code:** the
   Terraform, pipelines, scripts and charts themselves: secrets in code and git history, misconfigurations, unsafe
-  pipelines, lint, copy-paste and dead code (rules and probes in `devops/baseline.md`, Code, plus `devops/terraform.md`,
-  `devops/shell.md`, `devops/helm.md`, `devops/docker.md`, `devops/ansible.md`, `devops/ci.md`, `devops/python.md`, and the monitoring configs in `devops/observability.md`). Security, performance, cost and code also each get their own checklist
+  pipelines, lint, copy-paste and dead code (rules and probes in `devops/baseline.md`, Code, plus whichever tool
+  guides are installed: `terraform`, `shell`, `helm`, `docker`, `ansible`, `ci`, `python`, `observability`). Security, performance, cost and code also each get their own checklist
   batch: see "Audit coverage" below. Cost and performance are read together: a saving is judged against the
   performance target, and a performance fix against what it costs.
 - **pause points:** **every** change to infrastructure, in **any** environment, dev included: an apply, destroy or
@@ -41,6 +41,16 @@ truth-source: the live environment (provider APIs, real network paths, the state
   something; a `kubectl`/`helm` write; a playbook run; a change made over SSH. Infrastructure has no `git reset`. A
   deleted database, a replaced disk or a wrong firewall rule can't be undone by reverting code. So propose first and
   wait for a clear yes, every time, even under standing-proceed. A yes covers only the commands it was given for.
+
+## The project's stack, not ours
+
+Every tool, product and command named in this profile and its guides is an **example or a default**, never a
+requirement. The project's own choices win: its cloud, IaC tool, CI, secret manager, scanners, monitoring stack,
+load-test tool and local credential setup. Where the project already does something (a scanner in CI, a secret
+manager, a `.env` loader), use that and map the rule onto it. Where it does nothing, the named tool is a suggestion:
+propose it with an alternative or two, and let the user pick. Never add a new tool, service or layout to a project
+just because a guide names it. A rule is met by whatever satisfies it, and the probe is rewritten for the tool in
+use.
 
 ## Zero trust by default
 
@@ -83,7 +93,7 @@ A change gets the same checks as an audit, limited to what it touches, plus what
 1. **The rules that apply:** from the installed guides, pick the rules for the touched file types (Terraform,
    Dockerfile, workflow, script, chart) and check each against the diff.
 2. **Scanners on the change:** run the code scanners on the touched files, and the secret scanner on the commit
-   range: `gitleaks git . --log-opts="<base>..HEAD" --redact --no-banner`. A key added anywhere is a finding, even if
+   range (the project's own, or gitleaks: `gitleaks git . --log-opts="<base>..HEAD" --redact --no-banner`). A key added anywhere is a finding, even if
    a later commit removes it.
 3. **The plan and its cost:** for infrastructure code, the saved plan (every destroy and replace named) and the
    monthly cost delta.
@@ -108,7 +118,8 @@ result.
    Columns: lens, rule ID, section, rule, **result**, **evidence**. Every row gets one result: **pass** (with the
    probe output), **finding** (with its ID), **not checked** (and why: no access, tool missing, pause point not
    approved, guard stopped it), or **n/a** (and why). No blank rows.
-2. **Run the broad scanners too**, because a checklist only covers what it lists. All are read-only:
+2. **Run the broad scanners too**, because a checklist only covers what it lists. Start with the ones the project
+   already runs (in CI, pre-commit, the Makefile); the list below fills the gaps. All are read-only:
    - Code: `gitleaks`, `trivy config`, `checkov`, `tflint`, `shellcheck`, `zizmor`/`actionlint`, `jscpd` (commands in
      `devops/baseline.md`, Code), plus `hadolint`, `ansible-lint`, `ruff` and `bandit` where those guides are
      installed (each guide shows how to run its tool in a throwaway container instead of installing it).
@@ -118,7 +129,7 @@ result.
    - Images in use: `trivy image`.
    **A scanner that isn't installed: ask the user before installing it**, then run it. Check first
    (`command -v <tool>`), list every missing tool in one question (AskUserQuestion), and say for each: what it
-   checks, that it only reads, the exact install command (`brew install gitleaks actionlint zizmor kubescape`,
+   checks, that it only reads, the exact install command for the user's OS and package manager (on macOS, `brew install gitleaks actionlint zizmor kubescape`,
    `go install github.com/terraform-linters/tflint@v0.58.1` (tflint is not in Homebrew),
    `pipx install --python python3.12 prowler` (Prowler fails on Python 3.14), `npm install -g jscpd@4.0.5`) and where
    it installs. Offer "Yes, install all", "Pick which" and "No".
@@ -127,7 +138,8 @@ result.
 3. **Key inventory, every audit.** Find every sensitive key wherever it lives (repo and history, config, CI,
    app specs, function and container environment variables, cluster Secrets, files on servers) and check that each
    one is in the platform's secret manager: AWS Secrets Manager or SSM `SecureString`, Azure Key Vault, GCP Secret
-   Manager, DigitalOcean Secrets Manager (`doctl secrets`), OpenBao/Vault. Names only, never values. Put the table
+   Manager, DigitalOcean Secrets Manager (`doctl secrets`), a self-hosted one (OpenBao, Vault, Infisical, …), or
+   whichever manager the project already uses. Names only, never values. Put the table
    (key, where found, in the manager, rotation, who can read it) in the security batch; each key outside a manager is
    a finding. Probes: `devops/baseline.md`, Secrets and identity, and the provider guide.
 4. **Cost uses real numbers.** Read the last full month's bill by service (Cost Explorer, `doctl invoice list`, the
@@ -149,8 +161,9 @@ result.
 
 ## Secrets
 
-- Credentials (passwords, tokens, API keys, private keys) go in a `.secret` file (or a `.secret/` folder) at the repo
-  root: listed in `.gitignore`, mode `600`, loaded by the tooling (for example `set -a; . ./.secret; set +a` or a
+- Credentials (passwords, tokens, API keys, private keys) stay out of the repo. If the project already has a way to
+  keep local credentials (direnv, sops, a password manager CLI, a gitignored env file), use it. Otherwise we suggest
+  a `.secret` file (or a `.secret/` folder) at the repo root: listed in `.gitignore`, mode `600`, loaded by the tooling (for example `set -a; . ./.secret; set +a` or a
   Makefile `-include .secret`). Never in code, `*.tfvars`, state outputs, CI logs or chat. Every sensitive key a
   system uses belongs in the platform's secret manager (see "Key inventory" under "Audit coverage"); `.secret` holds
   only the local copy a tool on your machine needs.
@@ -160,7 +173,7 @@ result.
   user first, and their yes lets it run; cloud credential stores (`~/.aws`, `~/.kube`, gcloud) stay denied.
   To change a value, write it without reading the file (append a line, or `sed -i` a known key), or ask
   the user to do it. Use secrets by reference (environment variables, secret-manager lookups), never by echoing them.
-- Probe: `git check-ignore .secret .env` lists both; `stat -c '%a' .secret` (Linux) or `stat -f '%Lp' .secret`
+- Probe (for the `.secret` layout; adapt to the project's own): `git check-ignore .secret .env` lists both; `stat -c '%a' .secret` (Linux) or `stat -f '%Lp' .secret`
   (macOS) prints `600`; `gitleaks detect` finds nothing in the repo or its history.
 
 ## Credentials and profiles: a suggestion
@@ -198,6 +211,14 @@ developer's machine: local work runs, and only what reaches past the project ask
 - **Leaves to the user** load generators (`k6 run`, `hey`, `ab`, `wrk`, `vegeta`, `locust`, …): denied even after a
   yes, because load can take down a shared or production environment. Claude suggests the test; the user runs it.
 - Logs every ask and deny to `.claude/goodbehavior/guard.log` (we suggest adding it to `.gitignore`).
+- **Tools it has no checker for** are judged by shape, not by name, so a platform the guard has never heard of is
+  still covered. Their action words decide: `delete`, `deploy`, `reset`, `scale` and the like ask; only `list`,
+  `get`, `describe`, `status`, `logs` and the like run; secret reads (`token get`, `--reveal`) are denied. A tool
+  counts as remote when the project lists it in `.claude/goodbehavior/guard-tools.txt` (`remote: <tool>`; adoption
+  writes it), when the project's `.env` or the environment holds a credential named after it (`HCLOUD_TOKEN`), or
+  when a saved login for it sits in the home folder. A tool with none of these is local and runs, except for words
+  that only reach infrastructure (`destroy`, `terminate`, `deploy`, `publish`). Add `remote: <tool>` for a CLI that
+  logs in some other way, and `local: <tool>` for a project tool that sounds remote but isn't.
 - **Trusted commands:** list regexes, one per line, in `.claude/goodbehavior/guard-allow.txt` for commands this
   project trusts (for example `^make test_` for local test targets). A match turns an ask into a run; it never lifts a
   deny, so secrets stay protected. The file is under `.claude/`, so Claude can't add to it without asking, and
@@ -299,7 +320,7 @@ observability, backup/DR, performance, cost). It always comes with this profile.
 `digitalocean`, `onprem`; each maps the baseline rules to that platform's services and CLI probes) and one tool guide
 per IaC tool in use (`terraform`: safe plan and apply, state, environments, code; `shell`: writing and running scripts
 safely; `kubernetes`: clusters, workloads and their attack
-surface, OpenBao for secrets; `helm`: charts and releases; `docker`: Dockerfiles and images; `ansible`: playbooks
+surface, secret managers; `helm`: charts and releases; `docker`: Dockerfiles and images; `ansible`: playbooks
 and roles; `ci`: pipeline safety, speed and cost; `python`: Python ops scripts; `observability`: the monitoring
 stack itself, Prometheus, Alertmanager, Loki and Grafana: alerts that reach a person, logs, and who can reach them).
 
@@ -337,9 +358,10 @@ match: \bssh\b.*\bdocker(\s+compose|-compose)?\s+(.*\s)?(down|up|restart|stop|st
   credentials first, or assume them?
 - Did you read the whole plan? List every destroy and replace (`-/+`) and say why each is intended. A replace of a
   stateful resource (database, volume, bucket, key) is data loss.
-- Was the apply run from the saved, reviewed plan file (`plan -out` then `apply <file>`), not a fresh auto-approve?
-- After apply, does a new plan show no changes (`plan -detailed-exitcode` exits 0)? A diff means drift or a
-  perpetual diff.
+- Was the apply run from the saved, reviewed plan file (`plan -out` then `apply <file>`, or your tool's equivalent),
+  not a fresh auto-approve?
+- After apply, does a new plan or preview show no changes (`plan -detailed-exitcode` exits 0, or your tool's
+  equivalent)? A diff means drift or a perpetual diff.
 - Did you probe it from the consumer's side, as the workload identity (`dig`, `curl`, `nc`, the allowed call and one
   denied call)? Show the output.
 - Any state edit, import or console change? Is it in code now, and did the user approve it?

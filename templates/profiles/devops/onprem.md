@@ -40,10 +40,11 @@ which host and environment you are on: `hostname -f` and the inventory group it 
 
 ## Secrets and identity
 
-- **rule:** Key inventory: every sensitive key is in OpenBao/Vault (or Ansible Vault for playbook variables), not in
+- **rule:** Key inventory: every sensitive key is in a secret manager (the one the project uses: OpenBao, Vault,
+  Infisical, …; Ansible Vault for playbook variables), not in
   plain files on hosts or in the repo (baseline: key inventory).
-  **probe:** names and paths only. OpenBao: `bao kv list <mount>/` (and `vault kv list` for Vault) lists the
-  stored keys. Plain files on a host:
+  **probe:** names and paths only. The manager's own list command, for example OpenBao `bao kv list <mount>/` or
+  Vault `vault kv list <mount>/`, lists the stored keys. Plain files on a host:
   `sudo find / -xdev \( -name ".env*" -o -name "*.secret" -o -name "*.pem" -o -name "*.key" \) -not -path "/proc/*" -not -path "*/node_modules/*" 2>/dev/null`.
   Unencrypted Ansible variables with sensitive names:
   `grep -rlE "^[[:space:]]*[a-z_]*(password|secret|token|key)[a-z_]*:[[:space:]]*([\"']?[^!{\"'[:space:]]|[\"'][^{])" group_vars host_vars`

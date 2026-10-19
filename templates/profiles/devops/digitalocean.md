@@ -46,7 +46,7 @@ Before any probe, confirm which team and token context you are using, and say it
 
 ## Secrets and identity
 
-- **rule:** Key inventory: every sensitive key is in DigitalOcean Secrets Manager (or OpenBao/Vault), not in app
+- **rule:** Key inventory: every sensitive key is in DigitalOcean Secrets Manager (or the self-hosted manager the project uses), not in app
   specs as plain values, droplet `.env` files, CI variables or the repo (baseline: key inventory).
   **probe:** names only. Secrets Manager: `doctl secrets list --format Name,Region,Version`; `doctl secrets get <name> --region <region>`
   lists its keys with values masked (never add `--show`, `--kvs` or `--raw`: they print values, and the guard denies

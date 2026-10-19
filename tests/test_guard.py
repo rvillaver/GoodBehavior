@@ -96,17 +96,17 @@ REALPROV = fixture("realprov", {**GOOD_TF, "IaC/modules/x/tests/x.tftest.hcl": '
 REMOTEMOD = fixture("remotemod", {**GOOD_TF, "IaC/modules/x/mod.tf": 'module "vpc" {\n  source = "git::https://example.com/m.git"\n}\n'})
 
 
-def run(payload, cwd, mode="default"):
+def run(payload, cwd, mode="default", env=None):
     payload = dict(payload, cwd=cwd, hook_event_name="PreToolUse", permission_mode=mode)
     r = subprocess.run([sys.executable, GUARD], input=json.dumps(payload), capture_output=True, text=True,
-                       env=dict(os.environ, HOME=HOME, CLAUDE_PROJECT_DIR=cwd))
+                       env=dict(os.environ, HOME=HOME, CLAUDE_PROJECT_DIR=cwd, **(env or {})))
     if not r.stdout.strip():
         return "allow" if r.returncode == 0 else "crash"
     return json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"]
 
 
-def bash(command, cwd=None, mode="default"):
-    return run({"tool_name": "Bash", "tool_input": {"command": command}}, cwd or CLEAN, mode)
+def bash(command, cwd=None, mode="default", env=None):
+    return run({"tool_name": "Bash", "tool_input": {"command": command}}, cwd or CLEAN, mode, env)
 
 
 # Identity-stripped cases from a default-deny guard's bypass suite, with this guard's reviewed decisions.
@@ -866,6 +866,47 @@ TOOL_CASES = [
 ]
 
 
+# Tools with no checker of their own, judged by shape: action words, and whether the tool reaches a remote (the
+# project's guard-tools.txt, a credential in .env or the environment, a saved login in HOME). Made-up names, so no
+# real tool or variable on this machine changes the result.
+SHAPE = fixture("shape", {
+    ".env": "QSTACK_API_TOKEN=dummy\nAPP_ENV=dev\n",
+    ".claude/goodbehavior/guard-tools.txt": "# the project's tools\nremote: zcloud\nlocal: zbuild\n",
+})
+for rel, text in {".config/hostia/cli.toml": '[[contexts]]\ntoken = "abc"\n', ".config/zedit/config": "--theme=x\n"}.items():
+    os.makedirs(os.path.dirname(os.path.join(HOME, rel)), exist_ok=True)
+    with open(os.path.join(HOME, rel), "w") as f:
+        f.write(text)
+SHAPE_CASES = [
+    # listed remote in guard-tools.txt
+    ("zcloud server delete web-1", None, "ask"), ("zcloud server list", None, "allow"),
+    ("zcloud servers get web-1 -o json", None, "allow"), ("zcloud", None, "ask"), ("zcloud ssh web-1", None, "ask"),
+    ("zcloud token get", None, "deny"), ("zcloud secrets list", None, "allow"), ("zcloud env:list", None, "ask"),
+    ("zcloud config:set A=1", None, "ask"), ("zcloud --version", None, "allow"),
+    # a credential named after the tool in the project's .env (stem of qstack-cli)
+    ("qstack-cli db reset --linked", None, "ask"), ("qstack-cli projects list", None, "allow"),
+    ("qstack-cli projects frobnicate", None, "allow"),
+    # a saved login in HOME; a config without a credential doesn't count
+    ("hostia server delete web", None, "ask"), ("hostia server list", None, "allow"), ("hostia rescue web", None, "ask"),
+    ("zedit README.md", None, "allow"), ("zedit delete-line 3 a.txt", None, "allow"),
+    # a credential in the environment: writes ask, build words and unknown words run
+    ("nimbusctl instance terminate i-1", {"NIMBUS_API_KEY": "x"}, "ask"),
+    ("nimbusctl instance list", {"NIMBUS_API_KEY": "x"}, "allow"),
+    ("gradlish build", {"GRADLISH_PASSWORD": "x"}, "allow"),
+    ("nimbusctl instance terminate i-1", None, "ask"),
+    # the limit: no signal and a common word, so it runs; adoption's guard-tools.txt is what closes this
+    ("nimbusctl instance delete i-1", None, "allow"),
+    # no signal: local, unless the action word is one that only reaches infrastructure
+    ("unknown-tool build --out dist", None, "allow"), ("unknown-tool deploy prod", None, "ask"),
+    ("unknown-tool destroy stack", None, "ask"), ("zbuild deploy prod", None, "allow"),
+    ("unknown-tool password show", None, "ask"),
+    # known remote tools with no checker of their own: reads run now, writes and data stores still ask
+    ("hcloud server list", None, "allow"), ("hcloud server delete web", None, "ask"),
+    ("argocd app list", None, "allow"), ("argocd app sync web", None, "ask"), ("redis-cli get k", None, "ask"),
+    ("python3 -c \"import subprocess; subprocess.run(['zcloud', 'server', 'delete', 'x'])\"", None, "ask"),
+]
+
+
 def main():
     failures = []
 
@@ -889,6 +930,8 @@ def main():
         expect("[obs] " + cmd[:90], want, bash(cmd, OBS))
     for root, cmd, want in TF_CASES:
         expect("[%s] %s" % (os.path.basename(root), cmd), want, bash(cmd, root))
+    for cmd, env, want in SHAPE_CASES:
+        expect("[shape] " + cmd[:90], want, bash(cmd, SHAPE, env=env))
     for tool, inp, want in TOOL_CASES:
         inp = {k: v.replace("{P}", PROJECT).replace("~", HOME) for k, v in inp.items()}
         expect("%s %s" % (tool, inp), want, run({"tool_name": tool, "tool_input": inp}, PROJECT))
@@ -999,7 +1042,7 @@ def main():
         entries = [json.loads(line) for line in f]
     expect("decision log has asks and denies", True, {"ask", "deny"} <= {e["decision"] for e in entries})
 
-    total = len(CORE_CASES) + len(PROJECT_CASES) + len(TF_CASES) + len(TOOL_CASES) + 23
+    total = len(CORE_CASES) + len(PROJECT_CASES) + len(TF_CASES) + len(TOOL_CASES) + len(SHAPE_CASES) + 23
     for f_ in failures:
         print("  FAIL  " + f_)
     print("  %s  guard: %d/%d decisions as expected" % ("PASS" if not failures else "FAIL", total - len(failures), total))
