@@ -46,7 +46,9 @@ Then resolve the **profile** from `<source>/templates/profiles/`:
    in use, as `<profile>/<guide>` entries in the plan's `profiles` list (e.g. `"devops"`, `"devops/baseline"`, plus
    the platform guide). Read only those guide files. A platform with no guide gets the baseline only; say so in the
    proposal. If the profile ships a guard (`devops/guard.py`), add it as a `profiles` entry too, with `"hook": true`:
-   the done-gate hook hands every tool call to it.
+   the done-gate hook hands every tool call to it. Also list the command-line tools the project uses to reach its
+   platforms (from the user's answers, plus the Makefile, scripts and CI you survey in Phase 2), for
+   `guard-tools.txt` in Phase 4.
 5. **Custom fallback — never decline.** If nothing fits, elicit the three slots directly from the user ("what's the real
    thing, how would you check it's right, what counts as proof?") and write a custom profile. adopt must never say the
    method "isn't for this project."
@@ -132,7 +134,14 @@ manifest); you do only the **judgment steps** the script can't.
    profile body into `<target>/.claude/goodbehavior/profiles/custom.md` (no core file to copy).
 4. **Confirmed dev approach** (judgment; *only if a development slot is in play*): record in the target's CLAUDE.md
    `## Stack & conventions` + a `project` memory, so verify/gate-build use the agreed run/deploy/verify method.
-5. **Seed memories** (judgment): `definition-of-done` (one line + pointer to the principles home — don't restate) +
+5. **Guard tool list** (judgment; *only if the devops guard is installed*): write
+   `<target>/.claude/goodbehavior/guard-tools.txt` with one `remote: <tool>` line per CLI from Phase 1 that reaches a
+   platform (`remote: hcloud`, `remote: supabase`), and `local: <tool>` for a project tool whose action words sound
+   remote but aren't. The guard judges a tool it has no checker for by its action words; this list tells it which
+   tools reach a remote, so a `delete` through them asks. Skip tools the guard already checks (`aws`, `az`,
+   `gcloud`, `doctl`, `kubectl`, `helm`, `terraform`/`tofu`, `ansible`, `ssh`, `docker`, `git`, `gh`). Don't
+   overwrite an existing file; show the user what you wrote.
+6. **Seed memories** (judgment): `definition-of-done` (one line + pointer to the principles home — don't restate) +
    `reporting-honesty` + the `project-profile` from step 3; start an empty `build-deploy-gotchas`.
 
 ## Report

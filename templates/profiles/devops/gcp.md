@@ -41,6 +41,12 @@ Before any probe, confirm which account and project you are using, and say it in
 
 ## Secrets and identity
 
+- **rule:** Key inventory: every sensitive key is in Secret Manager, and workloads reference it instead of holding
+  the value (baseline: key inventory).
+  **probe:** names only. `gcloud secrets list --project=<project> --format="table(name,createTime,expireTime,rotation.nextRotationTime)"`.
+  Cloud Run environment variables, plain vs Secret Manager:
+  `gcloud run services describe <service> --region=<region> --project=<project> --format=json | jq -r '.spec.template.spec.containers[].env[]? | [.name, (if .valueFrom.secretKeyRef then "secret-manager" else "plain" end)] | @tsv'`.
+  A sensitive name marked `plain` is a finding.
 - **rule:** Secrets live in Secret Manager and rotate (baseline: secret manager, rotation).
   **probe:** `gcloud secrets list --project=<project> --format="table(name,rotation.nextRotationTime,replication)"`;
   each secret has a rotation schedule or a written reason.
@@ -152,6 +158,38 @@ Before any probe, confirm which account and project you are using, and say it in
   is `REGIONAL` where HA is claimed. **(pause point)** in non-prod:
   `gcloud sql instances failover <instance> --project=<project>` and time the recovery.
 
+## Performance
+
+Cloud Monitoring has no gcloud command that reads metric values, so latency here comes from the load balancer's
+request logs (read with gcloud's logging command below), or from Metrics Explorer in the console.
+
+- **rule:** Latency and errors are measured at the load balancer against the written target (baseline: written
+  target).
+  **probe:** a day of request latencies, slowest first:
+  `gcloud logging read 'resource.type="http_load_balancer"' --project=<project> --freshness=1d --limit=5000 --format='value(httpRequest.latency)' | sed 's/s$//' | sort -n | awk '{a[NR]=$1} END {print "p95:", a[int(NR*0.95)] "s", "p99:", a[int(NR*0.99)] "s"}'`.
+  Server errors: the same filter plus `httpRequest.status>=500`. Request logging must be on for the backend service
+  (`gcloud compute backend-services describe <backend> --global --project=<project> --format="value(logConfig.enable)"` prints `True`).
+- **rule:** Autoscaling keeps up (baseline: autoscaling).
+  **probe:** `gcloud compute instance-groups managed list --project=<project> --format="table(name,location(),autoscaled,size)"`
+  and the policy: `gcloud compute instance-groups managed describe <mig> --zone=<zone> --project=<project> --format="yaml(status.autoscaler)"`.
+  Cloud Run: `gcloud run services describe <service> --region=<region> --project=<project> --format="yaml(spec.template.metadata.annotations)"`
+  shows `autoscaling.knative.dev/minScale` and `maxScale`.
+- **rule:** Cloud CDN caches what it can (baseline: caching).
+  **probe:** `gcloud compute backend-services describe <backend> --global --project=<project> --format="value(enableCDN,cdnPolicy.cacheMode)"`;
+  hit ratio from the logs:
+  `gcloud logging read 'resource.type="http_load_balancer" httpRequest.cacheLookup=true' --project=<project> --freshness=1d --limit=5000 --format='value(httpRequest.cacheHit)' | sort | uniq -c`.
+- **rule:** The database shows where its time goes (baseline: database).
+  **probe:** Query Insights is on:
+  `gcloud sql instances describe <instance> --project=<project> --format="value(settings.insightsConfig.queryInsightsEnabled)"`
+  prints `True`; then read its top queries in the console (Cloud SQL, Query insights), or run the baseline's SQL.
+- **rule:** App, database and image registry sit in one region (baseline: placement).
+  **probe:** `gcloud sql instances list --project=<project> --format="table(name,region,gceZone)"`;
+  `gcloud artifacts repositories list --project=<project> --format="table(name,location)"`;
+  `gcloud run services list --project=<project> --format="table(metadata.name,metadata.labels['cloud.googleapis.com/location'])"`.
+- **rule:** Cloud Run and Functions cold starts stay off the latency-critical path (baseline: startup).
+  **probe:** the `minScale` annotation above is set on latency-critical services, and the image is small:
+  `gcloud artifacts docker images list <region>-docker.pkg.dev/<project>/<repo> --include-tags --format="table(package,tags,metadata.imageSizeBytes)"`.
+
 ## Cost
 
 - **rule:** Required labels on everything (baseline: tags enforced).
@@ -190,3 +228,12 @@ Before any probe, confirm which account and project you are using, and say it in
   **probe:** export billing to BigQuery and group by SKU for network egress; check Private Google Access is on for
   subnets that call Google APIs:
   `gcloud compute networks subnets list --project=<project> --format="table(name,region,privateIpGoogleAccess)"`.
+- **rule:** Log spend is capped (baseline: observability spend).
+  **probe:** `gcloud logging buckets list --project=<project> --format="table(name,retentionDays)"`; exclusion
+  filters on noisy sources: `gcloud logging sinks describe _Default --project=<project> --format="yaml(exclusions)"`.
+- **rule:** Artifact Registry repositories clean up old images (baseline: registry cleanup).
+  **probe:** `gcloud artifacts repositories describe <repo> --location=<region> --project=<project> --format="yaml(cleanupPolicies)"`
+  shows at least one policy.
+- **rule:** Cost anomalies reach someone (baseline: anomalies and unit cost).
+  **probe:** budgets with alert thresholds: `gcloud billing budgets list --billing-account=<billing-account-id> --format="table(displayName,amount.specifiedAmount.units,thresholdRules)"`;
+  anomaly alerts are set in the console (Billing, Anomalies).

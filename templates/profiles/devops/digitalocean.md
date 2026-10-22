@@ -12,8 +12,9 @@ token before it checks positional arguments, so those were reviewed by eye). Spa
 probes use the AWS CLI with `--endpoint-url https://<region>.digitaloceanspaces.com`; those were checked against
 AWS CLI 2.36.
 
-DigitalOcean has fewer built-in controls than the big three: no OIDC federation for the API, no managed secret
-store, no account-wide audit log API. Where a rule needs one of those, the guide says what to use instead.
+DigitalOcean has fewer built-in controls than the big three: no OIDC federation for the API and no account-wide
+audit log API. Where a rule needs one of those, the guide says what to use instead. It does have a Secrets Manager
+(the doctl secrets commands), which is where sensitive keys belong.
 
 Before any probe, confirm which team and token context you are using, and say it in the result:
 `doctl account get` and `doctl auth list`.
@@ -45,9 +46,14 @@ Before any probe, confirm which team and token context you are using, and say it
 
 ## Secrets and identity
 
-- **rule:** App secrets are App Platform `SECRET` variables or an external secret manager, never plain values in
-  the app spec or repo (baseline: secret manager).
-  **probe:** `doctl apps spec get <app-id>` shows every sensitive variable with `type: SECRET` and no plain value.
+- **rule:** Key inventory: every sensitive key is in DigitalOcean Secrets Manager (or the self-hosted manager the project uses), not in app
+  specs as plain values, droplet `.env` files, CI variables or the repo (baseline: key inventory).
+  **probe:** names only. Secrets Manager: `doctl secrets list --format Name,Region,Version`; `doctl secrets get <name> --region <region>`
+  lists its keys with values masked (never add `--show`, `--kvs` or `--raw`: they print values, and the guard denies
+  them). App Platform variables, plain vs `SECRET`:
+  `doctl apps spec get <app-id> --format json | jq -r '.. | objects | select(has("envs")) | .envs[] | [.key, (.type // "GENERAL")] | @tsv'`;
+  a sensitive name with `GENERAL` is a finding. Files on droplets (paths only):
+  `ssh <host> 'sudo find / -xdev \( -name ".env*" -o -name "*.secret" \) -not -path "*/node_modules/*" 2>/dev/null'`.
 - **rule:** Team members use 2FA and the least role they need (baseline: SSO, MFA, least privilege).
   **probe:** in the control panel's team settings, 2FA is required and owners are few and named.
 
@@ -123,6 +129,28 @@ WAF in front of public apps (for example Cloudflare), and check those defenses t
   **probe:** `doctl databases list --format Name,Engine,Size,NumNodes,Region`; more than one node where HA is
   claimed.
 
+## Performance
+
+DigitalOcean's metrics API has no `doctl` command for latency, so measure from outside with the baseline's `curl`
+probe, from an uptime check, or from the cluster's own Prometheus.
+
+- **rule:** Latency and errors are measured against the written target (baseline: written target).
+  **probe:** `doctl monitoring uptime list` shows a check per public service; its latency and down alerts:
+  `doctl monitoring uptime alert list <check-id>`. On DOKS with Prometheus, the ingress or Gateway's request duration
+  histogram gives p95 (for example `histogram_quantile(0.95, sum by (le) (rate(<request_duration_seconds>_bucket[5m])))`).
+- **rule:** Autoscaling keeps up (baseline: autoscaling).
+  **probe:** `doctl kubernetes cluster node-pool list <cluster> -o json | jq -r '.[] | [.name, .size, .count, .auto_scale, .min_nodes, .max_nodes] | @tsv'`
+  (the text output has no autoscaler columns); a pool whose count equals `max_nodes` is a finding. Pods: see `kubernetes.md`, Performance.
+- **rule:** Static files come from a CDN (baseline: caching).
+  **probe:** `doctl compute cdn list` lists the Spaces CDN endpoints and their TTL; sites behind another CDN use the
+  baseline's header probe.
+- **rule:** The managed database logs slow queries and its pool fits (baseline: database).
+  **probe:** MySQL: `doctl databases configuration get <db-id> --engine mysql` shows `slow_query_log` and
+  `long_query_time`; PostgreSQL connection pools: `doctl databases pool list <db-id>`. Then the baseline's SQL.
+- **rule:** Clusters, databases and the container registry sit in one region (baseline: placement).
+  **probe:** `doctl kubernetes cluster list --format Name,Region`; `doctl databases list --format Name,Region`;
+  `doctl registry get --format Name,Region`. A registry in another region slows every image pull.
+
 ## Cost
 
 - **rule:** Resources carry tags and sit in the right project (baseline: tags enforced).
@@ -151,3 +179,9 @@ WAF in front of public apps (for example Cloudflare), and check those defenses t
 - **rule:** Bandwidth stays inside the pooled allowance (baseline: data transfer kept low).
   **probe:** `doctl invoice list` then `doctl invoice summary <invoice-uuid>`, looking for bandwidth overage; keep
   droplet-to-database traffic on the VPC (private) network.
+- **rule:** The container registry is garbage-collected (baseline: registry cleanup).
+  **probe:** `doctl registry garbage-collection list`; the last run is recent, or old tags are removed some other way
+  (`doctl registry repository list-v2` shows tag counts per repository).
+- **rule:** Log and metric spend is known (baseline: observability spend). DigitalOcean doesn't bill for its own
+  metrics; the cost is in what you run (Loki, Prometheus storage, a log vendor).
+  **probe:** the baseline's Prometheus series probe, and the size of the log store's bucket or volume.

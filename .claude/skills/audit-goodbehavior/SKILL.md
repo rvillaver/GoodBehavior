@@ -31,7 +31,7 @@ A single read only finds what it was looking for. Pass each area through **indep
 one instance. At minimum: **coverage vs the intended reference/spec** and **completeness/wiring** (is it actually
 reachable/usable end to end, or a dead surface?); for software add **security** and **flow/UX**; for analysis add
 **data correctness/lineage**; for research add **source provenance**; for creative add **factual integrity & internal
-coherence**; for devops use the profile's lenses, which include **cost** (over/under-provisioning, redundancy, pricing) and **code**, and run its "Audit coverage" checklist batches (security, cost, code: one row per guide rule, plus the scanners). Run the lenses as separate passes — or parallel sub-agents, each blind to the others —
+coherence**; for devops use the profile's lenses, which include **performance** (measured against a written target), **cost** (over/under-provisioning, redundancy, pricing) and **code**, and run its "Audit coverage" checklist batches (security, performance, cost, code: one row per guide rule, plus the scanners). Run the lenses as separate passes — or parallel sub-agents, each blind to the others —
 then reconcile. A contradiction between two lenses (one says "done," another "unreachable") is itself a P0/P1 finding.
 
 ## Per-batch template (one file per batch, e.g. `docs/audit/01-<area>.md`)

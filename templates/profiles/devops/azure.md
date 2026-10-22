@@ -41,6 +41,13 @@ Before any probe, confirm which tenant and subscription you are in, and say it i
 
 ## Secrets and identity
 
+- **rule:** Key inventory: every sensitive key is in Key Vault, and apps reference it instead of holding the value
+  (baseline: key inventory).
+  **probe:** names only. Vault contents: `az keyvault secret list --vault-name <vault> --query "[].{name:name,enabled:attributes.enabled,expires:attributes.expires}" -o table`.
+  App Service and Functions settings, plain vs Key Vault reference:
+  `az webapp config appsettings list -g <rg> -n <app> --query "[].{name:name,keyVaultRef:starts_with(value, '@Microsoft.KeyVault')}" -o table`
+  (`az functionapp config appsettings list -g <rg> -n <app>` for function apps, with the same `--query`). Container Apps: `az containerapp show -g <rg> -n <app> --query "properties.template.containers[].env[].{name:name,secretRef:secretRef}" -o table`.
+  A sensitive name with `keyVaultRef` false, or no `secretRef`, is a finding.
 - **rule:** Secrets live in Key Vault with soft delete, purge protection and RBAC, not public (baseline: secret
   manager).
   **probe:** `az keyvault show -n <vault> --query "properties.{softDelete:enableSoftDelete,purgeProtection:enablePurgeProtection,rbac:enableRbacAuthorization,publicAccess:publicNetworkAccess}"`.
@@ -150,6 +157,32 @@ Before any probe, confirm which tenant and subscription you are in, and say it i
   `az sql failover-group list -g <rg> -s <server>`. **(pause point)** in non-prod:
   `az postgres flexible-server restart -g <rg> -n <server> --failover Forced` and time the recovery.
 
+## Performance
+
+- **rule:** Latency and errors are measured against the written target (baseline: written target).
+  **probe:** with Application Insights (needs the `application-insights` extension):
+  `az monitor app-insights query --app <app-insights-name> -g <rg> --analytics-query "requests | where timestamp > ago(14d) | summarize p95=percentile(duration, 95), p99=percentile(duration, 99), failed=round(100.0 * countif(success == false) / count(), 2) by bin(timestamp, 1d)"`.
+  Without it, the load balancer's metric (Application Gateway `ApplicationGatewayTotalTime`, Front Door
+  `TotalLatency`): `az monitor metrics list --resource <resource-id> --metric <metric> --aggregation Average Maximum --interval PT1H --offset 14d`.
+- **rule:** Autoscaling keeps up (baseline: autoscaling).
+  **probe:** `az monitor autoscale show -g <rg> -n <setting> --query "{min:profiles[0].capacity.minimum,max:profiles[0].capacity.maximum,rules:profiles[0].rules[].{metric:metricTrigger.metricName,op:metricTrigger.operator,threshold:metricTrigger.threshold,direction:scaleAction.direction,cooldown:scaleAction.cooldown}}"`.
+- **rule:** Front Door caches what it can (baseline: caching).
+  **probe:** for each route:
+  `az resource show --ids /subscriptions/<subscription-id>/resourceGroups/<rg>/providers/Microsoft.Cdn/profiles/<profile>/afdEndpoints/<endpoint>/routes/<route> --query "properties.cacheConfiguration"`;
+  an empty result means the route caches nothing. (The afd command group needs the `front-door` extension; this uses core only.)
+- **rule:** The database shows where its time goes (baseline: database).
+  **probe:** Azure SQL: Query Store is on (`SELECT actual_state_desc FROM sys.database_query_store_options;` prints
+  `READ_WRITE`); PostgreSQL flexible server:
+  `az postgres flexible-server parameter show -g <rg> -s <server> -n pg_qs.query_capture_mode --query value` is
+  `top` or `all`. Then the baseline's SQL for top queries and connections.
+- **rule:** App, database and registry sit in one region (baseline: placement).
+  **probe:** `az resource list -g <rg> --query "[].{name:name,type:type,location:location}" -o table`; anything on the
+  request path in a different `location` is a finding unless the design needs it.
+- **rule:** Functions cold starts stay off the latency-critical path (baseline: startup).
+  **probe:** `az functionapp show -g <rg> -n <app> --query "{plan:appServicePlanId,alwaysOn:siteConfig.alwaysOn}"`;
+  a latency-critical function on the Consumption plan has cold starts; Premium or Flex Consumption with always-ready
+  instances avoids them.
+
 ## Cost
 
 - **rule:** Required tags on everything, enforced by Azure Policy (baseline: tags enforced).
@@ -189,3 +222,14 @@ Before any probe, confirm which tenant and subscription you are in, and say it i
 - **rule:** Data transfer is known (baseline: data transfer kept low).
   **probe:** `az consumption usage list --start-date <yyyy-mm-dd> --end-date <yyyy-mm-dd> --include-meter-details --query "[?meterDetails.meterCategory=='Bandwidth'].{cost:pretaxCost,meter:meterDetails.meterName}"`;
   private endpoints for storage and databases `az network private-endpoint list --query "[].{name:name,target:privateLinkServiceConnections[0].groupIds}"`.
+- **rule:** Log spend is capped (baseline: observability spend).
+  **probe:** Log Analytics retention and daily cap:
+  `az monitor log-analytics workspace show -g <rg> -n <workspace> --query "{retentionDays:retentionInDays,dailyCapGb:workspaceCapping.dailyQuotaGb}"`.
+- **rule:** Container Registry cleans up untagged images (baseline: registry cleanup).
+  **probe:** `az acr show -n <registry> --query "{sku:sku.name,retention:policies.retentionPolicy}"`; the retention
+  policy needs the Premium tier, otherwise a scheduled `acr purge` task (`az acr task list -r <registry> -o table`).
+- **rule:** Licenses are counted (baseline: licenses).
+  **probe:** `az vm list --query "[].{name:name,os:storageProfile.osDisk.osType,license:licenseType,size:hardwareProfile.vmSize}" -o table`;
+  a Windows VM with no `licenseType` pays for the license with the VM (Azure Hybrid Benefit off).
+- **rule:** Cost anomaly alerts are on (baseline: anomalies and unit cost).
+  **probe:** in the portal: Cost Management, Cost alerts, anomaly alerts per subscription with a recipient.
