@@ -5,7 +5,8 @@ use-when: the project uses Terraform or OpenTofu; install next to the baseline a
 
 # Terraform: rules for a safe apply, each with its probe
 
-Every probe below was run against Terraform 1.15. Probes are read-only unless marked **(pause point)**: those need the
+Every probe below was run against Terraform 1.15 (the rules added in October 2026 against 1.16.5, on a local
+project with no cloud provider). Probes are read-only unless marked **(pause point)**: those need the
 user's yes first, per `devops.md`.
 
 ## The apply itself
@@ -73,3 +74,49 @@ user's yes first, per `devops.md`.
   **probe:** count `resource "` blocks per module directory; one means reconsider.
 - **rule:** Every module has a README: what it does, what it creates, inputs, outputs, an example.
   **probe:** every `modules/*/` directory has a `README.md` listing its variables and outputs.
+- **rule:** Code is formatted and valid before review: `fmt` and `validate` run in CI and before every commit.
+  **probe:** `terraform fmt -check -recursive` exits `0` (it lists unformatted files and exits `3`);
+  `terraform validate` passes in each root.
+- **rule:** Collections of named things use `for_each`, not `count`. With `count`, removing one item from the middle
+  of a list shifts every later index: Terraform rewrites or replaces them (tested: removing `b` from `["a","b","c"]`
+  changed `[1]` and destroyed `[2]`; with `for_each` only `b` was destroyed). Keep `count` for "zero or one".
+  **probe:** `grep -rnE '^[[:space:]]*count[[:space:]]*=[[:space:]]*length\(' --include='*.tf' --exclude-dir=.terraform .`
+  lists each `count` over a list; each one is a finding.
+- **rule:** Refactors use `moved` blocks, giving up management uses `removed` blocks, and adopting existing resources
+  uses `import` blocks, all in code and reviewed in a plan. Not `terraform state mv`/`rm`/`import` by hand.
+  **probe:** the plan says "has moved to" or "will no longer be managed by Terraform, but will not be destroyed"
+  (tested), with `0 to destroy`. `grep -rnE 'terraform (state (mv|rm)|import) ' --include='*.sh' --include='Makefile' --include='*.yaml' --include='*.yml' .`
+  finds no scripted state surgery.
+- **rule:** Secrets stay out of state. `sensitive = true` only hides a value from the plan output: it is still in the
+  state in clear text (tested). Prefer not passing secrets through Terraform at all (the workload reads them from the
+  secret manager). When Terraform must set one, use an `ephemeral` variable with a write-only argument (`*_wo`,
+  Terraform 1.11 or later) where the provider supports it, so it never reaches state; otherwise mark it `sensitive`
+  and treat the state as a secret.
+  **probe:** list secret-looking variables and check each is `ephemeral` or `sensitive`:
+  `grep -rnE -A4 'variable "[^"]*(password|secret|token|api_?key|private_?key)[^"]*"' --include='*.tf' --exclude-dir=.terraform . | grep -E 'variable "|ephemeral|sensitive'`.
+  An output that exposes a sensitive value without `sensitive = true` fails `terraform validate` with "Output refers
+  to sensitive values" (tested).
+- **rule:** Assumptions are written as code: `validation` on inputs, `precondition`/`postcondition` on resources,
+  `check` blocks for things that must stay true, and `terraform test` for every module.
+  **probe:** `terraform test` passes in each module that has a `tests/` folder (tested); modules without tests are
+  listed: `for d in modules/*/; do [ -d "$d/tests" ] || echo "no tests: $d"; done`. A failing `check` shows as a
+  warning in the plan ("Check block assertion failed", tested), so read plan warnings.
+- **rule:** Module sources are pinned: a registry module has an exact `version`, a git source has `?ref=` set to a
+  tag or commit.
+  **probe:** `grep -rnE 'source[[:space:]]*=[[:space:]]*"git::' --include='*.tf' --exclude-dir=.terraform . | grep -v 'ref='`
+  prints nothing.
+- **rule:** No provisioners or `local-exec` to configure servers: they run outside the plan and can't be reviewed.
+  Use images, cloud-init, or a config tool.
+  **probe:** `grep -rnE 'provisioner "|null_resource' --include='*.tf' --exclude-dir=.terraform .` prints nothing,
+  or each hit has a written reason.
+- **rule:** tflint runs with the provider's rule set, not only the default preset, so invalid instance types,
+  deprecated arguments and naming are caught.
+  **probe:** `.tflint.hcl` exists with `preset = "recommended"` and a `plugin` block for the provider in use
+  (`aws`, `azurerm`, `google`); `tflint --init && tflint --recursive` prints no issues.
+- **rule:** Plans stay small and whole: no routine `-target`, and each root holds what changes together.
+  **probe:** `grep -rnE --include='Makefile' --include='*.sh' --include='*.yaml' --include='*.yml' --exclude-dir=.claude -e '-target[= ]' .`
+  prints nothing outside a documented break-glass step.
+- **rule:** Every resource the provider can tag gets the standard tags from one place: provider `default_tags`
+  (AWS), or a shared `locals` map merged into every `tags`/`labels`.
+  **probe:** `grep -rn 'default_tags' --include='*.tf' --exclude-dir=.terraform .`, or the shared tags local; the
+  baseline's untagged-resources probe finds nothing.

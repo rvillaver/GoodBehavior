@@ -20,6 +20,7 @@ KNOWN = {
     "gcloud auth list --filter=status:ACTIVE --format=\"value(account)\"": "local command, succeeds without an account",
     "gcloud config get project": "local command, succeeds without an account",
     "doctl auth list": "local command, succeeds without a token",
+    'az monitor app-insights query --app <app-insights-name> -g <rg> --analytics-query "requests | where timestamp > ago(14d) | summarize p95=percentile(duration, 95), p99=percentile(duration, 99), failed=round(100.0 * countif(success == false) / count(), 2) by bin(timestamp, 1d)"': "needs the application-insights extension; the guide says so",
 }
 
 # Placeholder values that satisfy client-side format checks (ARNs, IDs, dates).
@@ -34,7 +35,8 @@ SUBS = {
                    "Microsoft.Network/FrontDoorWebApplicationFirewallPolicies/p",
     "<account-id>": "123456789012",
     "<30-days-ago>": "2026-01-01T00:00:00Z", "<now>": "2026-01-31T00:00:00Z", "<yyyy-mm-dd>": "2026-01-01",
-    "<iso-time>": "2026-01-01T00:00:00Z",
+    "<iso-time>": "2026-01-01T00:00:00Z", "<14-days-ago>": "2026-01-17T00:00:00Z",
+    "<yyyy-mm-ddThh:mm:ssZ>": "2026-01-01T00:00:00Z", "<epoch-seconds>": "1767225600",
     "<resource-id>": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg/providers/"
                      "Microsoft.Compute/virtualMachines/vm",
     "<public-ip-id>": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg/providers/"
@@ -52,11 +54,24 @@ def fill(cmd):
     return re.sub(r"<[^>]+>", "dummy", cmd)
 
 
+def before_pipe(cmd):
+    """The command up to its first unquoted `|`: what follows is local text processing, not the CLI."""
+    quote = None
+    for i, ch in enumerate(cmd):
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "|":
+            return cmd[:i].strip()
+    return cmd
+
+
 def guide_commands(cli):
     found = []
     for g in GUIDES:
         for c in re.findall(rf"`({cli} [^`]+)`", open(g, encoding="utf-8").read()):
-            c = c.strip()
+            c = before_pipe(c.strip())
             if cli == "aws" and "--endpoint-url" in c:  # Spaces (S3-compatible): check the S3 call itself
                 c = re.sub(r" --endpoint-url \S+", "", c)
             found.append((os.path.basename(g), c))

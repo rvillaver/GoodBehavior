@@ -40,6 +40,16 @@ which host and environment you are on: `hostname -f` and the inventory group it 
 
 ## Secrets and identity
 
+- **rule:** Key inventory: every sensitive key is in a secret manager (the one the project uses: OpenBao, Vault,
+  Infisical, …; Ansible Vault for playbook variables), not in
+  plain files on hosts or in the repo (baseline: key inventory).
+  **probe:** names and paths only. The manager's own list command, for example OpenBao `bao kv list <mount>/` or
+  Vault `vault kv list <mount>/`, lists the stored keys. Plain files on a host:
+  `sudo find / -xdev \( -name ".env*" -o -name "*.secret" -o -name "*.pem" -o -name "*.key" \) -not -path "/proc/*" -not -path "*/node_modules/*" 2>/dev/null`.
+  Unencrypted Ansible variables with sensitive names:
+  `grep -rlE "^[[:space:]]*[a-z_]*(password|secret|token|key)[a-z_]*:[[:space:]]*([\"']?[^!{\"'[:space:]]|[\"'][^{])" group_vars host_vars`
+  lists files with a plain value (a `!vault` value is encrypted and a `{{ ... }}` reference is fine; a literal is a
+  finding).
 - **rule:** Secrets are in Ansible Vault or HashiCorp Vault, never plain text in the repo or on disk in readable
   files (baseline: secret manager).
   **probe:** `grep -rnE '(password|secret|token)\s*[:=]' <repo>` finds only vaulted values; config files with
@@ -115,6 +125,24 @@ which host and environment you are on: `hostname -f` and the inventory group it 
 - **rule:** Hypervisor HA and power redundancy work where the design claims them (baseline: failover tested).
   **probe:** Proxmox `ha-manager status`; VMware HA in vCenter; UPS status via `upsc <ups>` (NUT).
   **(pause point)** in a maintenance window, migrate or fail a host and time the recovery.
+
+## Performance
+
+- **rule:** Latency and errors are measured at the reverse proxy against the written target (baseline: written
+  target).
+  **probe:** the access log records request time: `sudo nginx -T | grep -E 'log_format.*(request_time|upstream_response_time)'`.
+  Then p95 from the log, with `$request_time` as the last field:
+  `awk '{print $NF}' /var/log/nginx/access.log | sort -n | awk '{a[NR]=$1} END {print "p95:", a[int(NR*0.95)]}'`.
+- **rule:** Hosts are not waiting on CPU, disk or memory (baseline: saturation).
+  **probe:** `vmstat 5 3`: `r` above the core count means CPU queueing, `st` above a few percent means the
+  hypervisor is overcommitted, `si`/`so` above 0 means swapping. `iostat -x 5 3` (sysstat): `%util` near 100 or a
+  high `aqu-sz` means the disk is the bottleneck.
+- **rule:** The hypervisor is not overcommitted for latency-sensitive VMs (baseline: saturation).
+  **probe:** CPU ready time in vSphere (`govc metric.sample -n 60 <vm> cpu.ready.summation`) or steal time inside the
+  guest (`st` in `vmstat`); sustained ready time over about 5% per vCPU slows the VM.
+- **rule:** Things that talk to each other sit on the same network segment, without extra hops (baseline:
+  placement).
+  **probe:** `mtr -rwc 20 <db-host>` from the app host: few hops and low, steady latency.
 
 ## Cost
 

@@ -6,13 +6,15 @@ artifacts parse; python artifacts compile.
 Drift: the invariant layer (CLAUDE.md core, verify/audit/roadmap skills, the hook, generic
 templates) must not re-acquire dev-only phrasing — the exact regression the profile layer fixed.
 Dev phrasing is allowed only where the development instantiation legitimately lives."""
+import subprocess
 import json, os, py_compile, re, sys, tempfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 PROFILES = ("development", "analysis", "research", "creative", "devops")
 SLOTS = ("**the-real-thing:**", "**verify:**", "**evidence:**")
 # devops guides (templates/profiles/devops/<name>.md): every practice is a `**rule:**` paired with a `**probe:**`
-DEVOPS_GUIDES = ("baseline", "terraform", "shell", "aws", "azure", "gcp", "digitalocean", "onprem", "kubernetes", "helm")
+DEVOPS_GUIDES = ("baseline", "terraform", "shell", "aws", "azure", "gcp", "digitalocean", "onprem", "kubernetes", "helm",
+                 "docker", "ansible", "ci", "python", "observability")
 
 # files that must stay artifact-agnostic (the invariant layer)
 INVARIANT_FILES = [
@@ -79,6 +81,25 @@ def main():
         bad = unpaired_rules(body)
         check(f"devops guide {g}: every rule has a probe", "**rule:**" in body and not bad,
               f"e.g. {bad[0]!r}" if bad else "no rules found")
+
+    # the profile's own checklist command puts every rule in a batch, except sections the area batches own
+    cmd = re.search(r"```sh\n\s*(awk .*?)\n\s*```", read("templates/profiles/devops.md"), re.S).group(1)
+    cmd = cmd.replace(".claude/goodbehavior/profiles/devops/*.md", "templates/profiles/devops/*.md")
+    rows = subprocess.run(cmd, shell=True, cwd=ROOT, capture_output=True, text=True).stdout.splitlines()
+    batched = {(r.split("|")[2].strip().rsplit("-", 1)[0], r.split("|")[3].strip()) for r in rows}
+    area_only = {"Backup and DR", "Observability", "Workloads", "Releases", "Cluster and upgrades",
+                 "Namespaces and environments", "Before running a script", "Before running a playbook",
+                 "Alerting", "Metrics", "Logs"}
+    dropped = set()
+    for g in DEVOPS_GUIDES:
+        section = None
+        for ln in read(f"templates/profiles/devops/{g}.md").splitlines():
+            if ln.startswith("## "):
+                section = ln[3:]
+            elif ln.startswith("- **rule:**") and (g, section) not in batched and section not in area_only:
+                dropped.add(f"{g}: {section}")
+    check("checklist command puts every guide section in a batch", rows and not dropped,
+          "missing: " + ", ".join(sorted(dropped)))
 
     # skill frontmatter name == dir name
     skills_dir = os.path.join(ROOT, ".claude", "skills")

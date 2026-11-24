@@ -122,12 +122,22 @@ Write findings in the "Security findings" format from `devops.md` (risk, how lik
   **probe:** `kubectl get externalsecrets -A` or `kubectl get secretproviderclass -A` (whichever the cluster uses);
   `gitleaks detect` on the manifests repo finds nothing. Never print secret values: the guard denies dumping Secret
   objects as YAML or JSON.
-- **rule:** If the cluster has no secrets manager, suggest **OpenBao** (open source, a Linux Foundation fork of
-  Vault, same API). Run it from its Helm chart in HA mode with Raft storage, auto-unseal through a cloud KMS or a
+- **rule:** Key inventory: every Secret in the cluster comes from the secrets manager, and no sensitive value sits in
+  a plain environment variable (baseline: key inventory).
+  **probe:** names only. Secrets and who made them:
+  `kubectl get secrets -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,TYPE:.type,OWNER:.metadata.ownerReferences[0].kind'`;
+  an `Opaque` Secret whose owner isn't `ExternalSecret` (or the CSI driver) was made by hand or by a chart: check
+  where its value came from. Sync health: `kubectl get externalsecrets -A` shows `SecretSynced`. Plain environment
+  variables that look sensitive:
+  `kubectl get deploy,statefulset,daemonset,cronjob -A -o json | jq -r '.. | .containers? // empty | .[] | .env[]? | select(.value) | .name' | sort -u | grep -iE 'pass|secret|token|key'`.
+- **rule:** If the cluster has no secrets manager, suggest one that fits the platform, with the options side by side:
+  the cloud's own manager fed through External Secrets or the CSI driver (simplest on EKS/AKS/GKE), or a self-hosted
+  one. For self-hosted, **OpenBao** is one option (open source, a Linux Foundation fork of Vault, same API): run it
+  from its Helm chart in HA mode with Raft storage, auto-unseal through a cloud KMS or a
   transit key, the Kubernetes auth method so workloads log in with their service account, and an audit device on.
   Feed workloads through External Secrets (its Vault provider works with OpenBao) or the OpenBao agent injector. This
-  is a suggestion; a cloud secret manager or Vault serves the same rule.
-  **probe:** `kubectl get pods -A -l app.kubernetes.io/name=openbao` shows the server pods running; inside one,
+  is a suggestion; any manager that workloads read by reference serves the same rule.
+  **probe:** for the manager in use. OpenBao, for example: `kubectl get pods -A -l app.kubernetes.io/name=openbao` shows the server pods running; inside one,
   `bao status` shows `Sealed false` and `HA Enabled true`; `bao auth list` includes `kubernetes/`;
   `bao audit list` shows a device. None of these print secret values.
 - **rule:** An admission policy engine (Kyverno or Gatekeeper) enforces what PSA can't: signed images, required
@@ -219,9 +229,39 @@ Write findings in the "Security findings" format from `devops.md` (risk, how lik
   **probe:** `kubectl top nodes` works (metrics pipeline is up); the collector DaemonSet is running on every node:
   `kubectl get daemonset -A`.
 
+## Performance
+
+- **rule:** Horizontal autoscaling is set on stateless workloads, with a target below saturation and a maximum
+  above the load-test peak (baseline: autoscaling).
+  **probe:** `kubectl get hpa -A` shows each autoscaler's current vs target use and replicas; one at `MAXPODS` is a
+  finding. Missing metrics show as `<unknown>` (metrics-server or the adapter is down).
+- **rule:** CPU limits don't throttle latency-sensitive containers (baseline: saturation). Many teams set a CPU
+  request and no CPU limit for web workloads.
+  **probe:** the baseline's throttling query in Prometheus; containers over 25% throttled periods with p95 latency
+  above target need a higher limit or none.
+- **rule:** Nodes are not under pressure, and new nodes arrive in time (baseline: saturation, autoscaling).
+  **probe:** `kubectl get nodes -o custom-columns='NODE:.metadata.name,MEMORY:.status.conditions[?(@.type=="MemoryPressure")].status,DISK:.status.conditions[?(@.type=="DiskPressure")].status'`
+  shows `False`; `kubectl get pods -A --field-selector=status.phase=Pending` is empty, or each pending pod is waiting
+  on a node the autoscaler is adding.
+- **rule:** Pods start fast: small images pulled from a nearby registry, readiness probes that pass when the app can
+  serve (baseline: startup).
+  **probe:** `kubectl get events -A --field-selector reason=Pulled` shows pull times; long pulls mean big images or a
+  distant registry.
+
 ## Cost
 
 - **rule:** Requests match real use (VPA recommendations or Goldilocks), non-prod scales down off-hours, spot nodes
   run interruptible work, and cost is shown per namespace (OpenCost, Kubecost).
   **probe:** `kubectl top pods -A` compared with the requests from the Workloads probe; requests far above use are
   over-provisioned, use near limits is under-provisioned (see baseline Cost).
+- **rule:** Nodes are well packed: the sum of requests uses most of each node's allocatable CPU and memory, and the
+  cluster autoscaler removes nodes that stay underused (baseline: not over-provisioned).
+  **probe:** `kubectl describe nodes | grep -A8 'Allocated resources'` shows requests per node as a percentage of
+  allocatable; nodes under about 50% on both CPU and memory for days are a sign of bad packing or too-large nodes.
+- **rule:** Interruptible work runs on spot or preemptible nodes, protected by PodDisruptionBudgets and spread
+  across nodes (baseline: pricing model).
+  **probe:** `kubectl get nodes -L <spot-label>` (the provider's capacity-type label) and `kubectl get pdb -A`;
+  each workload on spot has a PDB and more than one replica.
+- **rule:** Cost is shown per namespace or team (baseline: anomalies and unit cost).
+  **probe:** OpenCost or Kubecost is installed (`kubectl get deploy -A | grep -iE 'opencost|kubecost'`), or the
+  provider's cost allocation for the cluster is on (provider guide).

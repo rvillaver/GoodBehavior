@@ -41,6 +41,14 @@ Cost of probing: Cost Explorer (`aws ce ...`) charges per API request. Run those
 
 ## Secrets and identity
 
+- **rule:** Key inventory: every sensitive key is in Secrets Manager or a `SecureString` parameter, not in plain
+  places (baseline: key inventory).
+  **probe:** names only. Secrets Manager: `aws secretsmanager list-secrets --query 'SecretList[].[Name,RotationEnabled,LastRotatedDate,LastAccessedDate]' --output table`.
+  Plain parameters with sensitive names: `aws ssm describe-parameters --query "Parameters[?Type!='SecureString'].Name" --output text`.
+  Lambda environment variable names: `aws lambda list-functions --query 'Functions[?Environment].{fn:FunctionName,vars:keys(Environment.Variables)}'`.
+  ECS task definitions, plain vs from a secret store:
+  `aws ecs describe-task-definition --task-definition <task-def> --query 'taskDefinition.containerDefinitions[].{name:name,plain:environment[].name,fromSecretStore:secrets[].name}'`.
+  A sensitive name in a plain list is a finding.
 - **rule:** Secrets live in Secrets Manager or SSM Parameter Store (SecureString), and rotate (baseline: secret
   manager, rotation).
   **probe:** `aws secretsmanager list-secrets --query 'SecretList[].[Name,RotationEnabled,LastRotatedDate]' --output table`;
@@ -165,6 +173,41 @@ Cost of probing: Cost Explorer (`aws ce ...`) charges per API request. Run those
   **(pause point)** in non-prod: `aws rds reboot-db-instance --db-instance-identifier <db> --force-failover` and time
   the recovery.
 
+## Performance
+
+- **rule:** Latency and errors are measured at the load balancer against the written target (baseline: written
+  target).
+  **probe:** p95 and p99 latency per day:
+  `aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name TargetResponseTime --dimensions Name=LoadBalancer,Value=<app/name/id> --start-time <14-days-ago> --end-time <now> --period 86400 --extended-statistics p95 p99`;
+  server errors with `--metric-name HTTPCode_Target_5XX_Count --statistics Sum` and the same dimensions.
+- **rule:** Autoscaling keeps up (baseline: autoscaling).
+  **probe:** policies and targets:
+  `aws autoscaling describe-policies --auto-scaling-group-name <asg> --query 'ScalingPolicies[].[PolicyName,PolicyType,TargetTrackingConfiguration.TargetValue]'`;
+  how long scale-outs took:
+  `aws autoscaling describe-scaling-activities --auto-scaling-group-name <asg> --max-items 20 --query 'Activities[].[StartTime,EndTime,StatusCode]'`.
+  ECS services: `aws application-autoscaling describe-scalable-targets --service-namespace ecs --query 'ScalableTargets[].[ResourceId,MinCapacity,MaxCapacity]'`.
+- **rule:** CloudFront caches what it can (baseline: caching).
+  **probe:** the cache hit rate needs additional metrics turned on:
+  `aws cloudfront get-monitoring-subscription --distribution-id <id>` shows `RealtimeMetricsSubscriptionStatus: Enabled`;
+  then `aws cloudwatch get-metric-statistics --region us-east-1 --namespace AWS/CloudFront --metric-name CacheHitRate --dimensions Name=DistributionId,Value=<id> Name=Region,Value=Global --start-time <14-days-ago> --end-time <now> --period 86400 --statistics Average`.
+- **rule:** The database shows where its time goes (baseline: database).
+  **probe:** Performance Insights or Database Insights is on:
+  `aws rds describe-db-instances --query 'DBInstances[].[DBInstanceIdentifier,PerformanceInsightsEnabled,DatabaseInsightsMode]'`.
+  Top SQL by load:
+  `aws pi get-resource-metrics --service-type RDS --identifier <db-resource-id> --metric-queries '[{"Metric":"db.load.avg","GroupBy":{"Group":"db.sql_tokenized","Limit":10}}]' --start-time <yyyy-mm-ddThh:mm:ssZ> --end-time <yyyy-mm-ddThh:mm:ssZ> --period-in-seconds 3600`
+  (the resource ID is `DbiResourceId` from `describe-db-instances`). Peak connections: `DatabaseConnections` with
+  `--statistics Maximum` against the engine's `max_connections`.
+- **rule:** App, database, cache and image registry sit in one region, and chatty pairs in one zone (baseline:
+  placement).
+  **probe:** `aws rds describe-db-instances --query 'DBInstances[].[DBInstanceIdentifier,AvailabilityZone]'`;
+  `aws elasticache describe-cache-clusters --query 'CacheClusters[].[CacheClusterId,PreferredAvailabilityZone]'`;
+  `aws ecr describe-repositories --query 'repositories[].repositoryUri'` (the region is in the URI).
+- **rule:** Lambda cold starts are known and kept off the latency-critical path (baseline: startup).
+  **probe:** share and p95 of cold starts over a day:
+  `aws logs start-query --log-group-name /aws/lambda/<function> --start-time <epoch-seconds> --end-time <epoch-seconds> --query-string 'filter @type = "REPORT" | stats count(*) as invocations, count(@initDuration) as cold, pct(@initDuration, 95) as p95_init_ms'`,
+  then `aws logs get-query-results --query-id <id>`. Warm capacity:
+  `aws lambda list-provisioned-concurrency-configs --function-name <function>`.
+
 ## Cost
 
 - **rule:** Required tags on everything (baseline: tags enforced).
@@ -204,3 +247,15 @@ Cost of probing: Cost Explorer (`aws ce ...`) charges per API request. Run those
   **probe:** `aws ce get-cost-and-usage --time-period Start=<yyyy-mm-dd>,End=<yyyy-mm-dd> --granularity MONTHLY --metrics UnblendedCost --group-by Type=DIMENSION,Key=USAGE_TYPE`,
   looking at `DataTransfer` and `NatGateway-Bytes`. S3 and DynamoDB gateway endpoints exist (they're free):
   `aws ec2 describe-vpc-endpoints --query 'VpcEndpoints[].[VpcId,ServiceName,VpcEndpointType]'`.
+- **rule:** Log and metric spend is capped (baseline: observability spend).
+  **probe:** ingestion per log group over 30 days:
+  `aws cloudwatch get-metric-statistics --namespace AWS/Logs --metric-name IncomingBytes --dimensions Name=LogGroupName,Value=<log-group> --start-time <30-days-ago> --end-time <now> --period 2592000 --statistics Sum`;
+  log groups without retention: `aws logs describe-log-groups --query 'logGroups[?!retentionInDays].logGroupName'`.
+- **rule:** ECR repositories expire old images (baseline: registry cleanup).
+  **probe:** `aws ecr get-lifecycle-policy --repository-name <repo>` returns a policy (`LifecyclePolicyNotFoundException` means none).
+- **rule:** Licenses are counted (baseline: licenses).
+  **probe:** `aws ec2 describe-instances --query 'Reservations[].Instances[].[InstanceId,PlatformDetails,InstanceType]' --output table`.
+- **rule:** Cost anomaly detection is on (baseline: anomalies and unit cost).
+  **probe:** `aws ce get-anomaly-monitors --query 'AnomalyMonitors[].[MonitorName,MonitorType]'` and
+  `aws ce get-anomaly-subscriptions --query 'AnomalySubscriptions[].[SubscriptionName,Frequency]'` (each call is
+  billed, like other Cost Explorer calls).

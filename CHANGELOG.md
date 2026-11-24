@@ -3,6 +3,86 @@
 Every entry here is a unit a downstream project will 3-way-merge via `/update-goodbehavior` — write entries so an
 adopter skimming before an update knows what's coming and why.
 
+## 2026-10-19 — devops: the project's stack, not ours; the guard judges unknown tools by shape
+
+- The devops profile and its guides no longer push tools: a new section, "The project's stack, not ours", says every
+  named tool is an example or a default. Scanners start with the ones the project already runs; the secret manager is
+  whichever the project uses (OpenBao is one option, not the suggestion); the baseline's linter rule covers any IaC
+  tool; k6 is a sample load script; `.secret` is a fallback when the project has no credential setup of its own.
+- The guard used to run any CLI it didn't know by name (`upctl server delete`, `supabase db reset`, `neonctl branches
+  delete` all ran) and ask for every call of the remote tools it only listed (`hcloud server list` asked). Now a
+  tool with no checker of its own is judged by its action words and by whether it reaches a remote: a
+  `remote:` line in the new `.claude/goodbehavior/guard-tools.txt`, a credential named after it in `.env` or the
+  environment, or a saved login in HOME. Writes ask, reads run, secret reads are denied. Data store clients
+  (`psql`, `redis-cli`, …) still ask for everything.
+- `/adopt-goodbehavior` writes `guard-tools.txt` from the tools the project says it uses. Existing installs: add
+  `remote: <tool>` lines for the CLIs you use that log in without a token variable or a saved login file.
+
+## 2026-10-17 — devops guard: reading a saved plan's changed fields runs
+
+- `terraform show -json <plan> | jq …` now runs when the filter prints only addresses, actions, key names and the
+  sensitive/unknown masks. `before`/`after` may be read inside `select()` or through `keys`, `length` or `type`.
+  So "which fields change on these resources" no longer asks.
+- It now asks for filters that print values, which the old word check let through: `jq .`, a bare `jq`,
+  `.resource_changes[0]`, `.resource_changes[].change`, `to_entries`/`tostring` on a change, `.change[$var]`, and
+  `error`/`debug`/`stderr`, which print to stderr even inside `select()`.
+
+## 2026-10-17 — devops: observability guide; the guard asks before monitoring writes
+
+- New guide `devops/observability` for the monitoring stack itself: Prometheus, Alertmanager, Loki, Grafana. Rules
+  and probes for config in Git and checked in CI, alert unit and routing tests, alerts that reach a person, a
+  dead man's switch, runbooks, noisy alerts, silences, target and Prometheus health, retention, HA, logs that
+  arrive, secrets and labels in logs, Loki retention and dropped lines, who can reach the APIs, Loki tenants,
+  Grafana SSO, default password and service-account tokens, patching, query and scrape speed, scrape limits,
+  unused metrics, log volume, and rebuilding the stack from Git. Probes were run against a local stack.
+- Install it with `devops/observability` in the adopt plan when the project runs or configures its own monitoring.
+- Guard: firing a test alert, adding or expiring a silence, rule and Alertmanager syncs (`mimirtool`, `lokitool`,
+  `cortextool`), `promtool push`, `grafana-cli` admin and plugin installs and `grafanactl resources push` now ask,
+  also when run through `docker run --entrypoint`. Their reads and file checks still run.
+
+## 2026-10-17 — devops guard: local work runs, only infrastructure asks
+
+The guard now works like a developer's machine. Before, anything it couldn't prove read-only asked, so deleting a
+file, `git rm`, running the project's tests or a scratch script all asked.
+- **Runs without asking:** edits and deletes inside the project or temp folders, local git (`rm`, `mv`, `rebase`,
+  `reset`, `branch -d`), local programs it doesn't know, tests (`bats`, `node --test`), Python scripts (the commands
+  their `subprocess` calls run are checked), plain shell arithmetic and `for ((…))` loops, `find -exec` (the command
+  is checked), `act -n`.
+- **Still asks:** infrastructure and remote writes, databases, `git push`/history rewrites, deletes outside the
+  project, lost uncommitted work (`reset --hard`, `clean -f`, `checkout -- file`), installs, `kill`, code it can't
+  read (`npx`, `perl -e 'system…'`), `act` with secrets, and Python/node that reaches the network.
+- In bats files, tools called by a variable run (tests mock them); literal commands are still checked.
+- devops.md: don't ask before local work either.
+
+## 2026-10-16 — devops: performance, zero trust, key inventory, more code guides; a looser guard
+
+**Profile and guides**
+- A **performance** lens and checklist batch: written latency targets, where time goes, autoscaling, caching,
+  placement, the database, cold starts, saturation. Every guide has a Performance section.
+- **Savings are proven**: the order of cost work (idle → design waste → rightsize → schedule → modernize → commit
+  last), and before/after metrics plus the next bill before a saving counts as saved. New cost rules: log and metric
+  spend, registry cleanup, licenses, a cost delta on every IaC change, anomaly alerts and unit cost, Kubernetes
+  packing and spot.
+- **Zero trust by default** in every design, proposal and audit, with its own rules and probes.
+- **Key inventory every audit**: every sensitive key found (repo, history, CI, app specs, env vars, cluster Secrets,
+  server files) must be in the secret manager (AWS Secrets Manager/SSM, Key Vault, GCP Secret Manager, DigitalOcean
+  Secrets Manager, OpenBao/Vault).
+- Terraform: `for_each` over `count`, `moved`/`removed`/`import` blocks, secrets out of state (`sensitive` is not
+  enough), `terraform test`, pinned module sources, tflint rule sets. New guides: `docker`, `ansible`, `ci`, `python`.
+- A code-finding format and a review mode for a single change (PR or diff).
+- **Load tests are the user's call**: Claude writes and suggests the k6 script, never runs it.
+
+**Guard**
+- Load generators (k6, hey, ab, wrk, vegeta, locust, …) are denied even after a yes.
+- A project token from `.env`/`.secret`, or a secret-manager value, read into a variable or code to use it now asks
+  instead of being denied, so the user's yes works. Printing a secret stays denied. `doctl secrets get --show/--kvs/--raw`
+  is denied.
+- Fewer false asks: Azure reads with `--query` or flag values, `gcloud storage ls`, `helm diff`/`pull`,
+  `aws logs start-query`, `s3api head-*`, restic/borg/govc/qm reads, `terraform show -json | jq` filtered to
+  addresses, `kubectl get secrets` with metadata-only columns. Every read-only probe in the guides now runs without
+  asking (a test checks it).
+- Consent questions are one short line; the explanation goes in the reply text above them.
+
 ## 2026-10-12 — devops profile: guides, guard, security, cost and code audits
 
 A fifth core profile for infrastructure work, cloud or on-prem. Guides pair every rule with a live probe; a guard

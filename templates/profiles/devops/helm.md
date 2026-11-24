@@ -45,8 +45,8 @@ version. Point every command at the project's cluster (`KUBECONFIG=files/kubecon
 ## Releases
 
 - **rule:** Preview every upgrade before running it.
-  **probe:** `helm template <release> <chart> -n <ns> -f <values-file> | kubectl diff -n <ns> -f -` (or `helm diff
-  upgrade` with the helm-diff plugin) shows exactly the expected changes.
+  **probe:** `helm template <release> <chart> -n <ns> -f <values-file> | kubectl diff -n <ns> -f -` (or `helm diff upgrade`
+  with the helm-diff plugin) shows exactly the expected changes.
 - **rule:** Upgrades wait for readiness and roll back on failure, with bounded history:
   `helm upgrade --install <release> <chart> -n <ns> -f <values-file> --atomic --wait --timeout 10m --history-max 10`.
   **probe:** **(pause point)** that command, after the user has seen the diff above.
@@ -72,5 +72,5 @@ version. Point every command at the project's cluster (`KUBECONFIG=files/kubecon
   **probe:** `helm pull <repo>/<chart> --version <version> --verify` (provenance) or `cosign verify` for an OCI chart;
   `helm template` of it is scanned as above.
 - **rule:** Your own charts are published to an OCI registry and signed.
-  **probe:** `helm push <chart>-<version>.tgz oci://<registry>/<path>` in CI, then
-  `cosign verify <registry>/<path>/<chart>:<version>` passes.
+  **probe:** `cosign verify <registry>/<path>/<chart>:<version>` passes for the published chart. The CI job
+  publishes it; running that by hand is a **(pause point)**: `helm push <chart>-<version>.tgz oci://<registry>/<path>`.
